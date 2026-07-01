@@ -1,0 +1,10 @@
+{
+  "name": "greenhouse",
+  "compatibility_date": "2026-06-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/index.js",
+  "assets": {
+    "directory": "./",
+    "binding": "ASSETS"
+  }
+}
