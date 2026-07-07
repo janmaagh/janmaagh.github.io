@@ -158,3 +158,341 @@ async function handleInquiries(request, env, method, id) {
     const created = await getRow(env, 'inquiries', newId);
     return jsonResponse(created, 201);
   }
+const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+
+  if (method === 'PUT' && id) {
+    const body = await request.json();
+    const data = pick(body, INQUIRY_FIELDS);
+    const existing = await getRow(env, 'inquiries', id);
+    if (!existing) return errorResponse('Anfrage nicht gefunden', 404);
+    const merged = { ...existing, ...data };
+    await env.DB.prepare(
+      `UPDATE inquiries SET name=?, email=?, phone=?, street=?, house_number=?, zip=?, city=?, address=?,
+       status=? WHERE id=?`
+    ).bind(merged.name, merged.email, merged.phone, merged.street, merged.house_number,
+           merged.zip, merged.city, merged.address, merged.status, id).run();
+    return jsonResponse(await getRow(env, 'inquiries', id));
+  }
+
+  if (method === 'DELETE' && id) {
+    await deleteRow(env, 'inquiries', id);
+    return jsonResponse({ deleted: true });
+  }
+
+  return errorResponse('Methode nicht unterstützt', 405);
+}
+
+// ---------------------------------------------------------------------------
+// Buchungen — DIESE Tabelle speist den Airbnb-Export!
+// ---------------------------------------------------------------------------
+
+async function handleBookings(request, env, method, id) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+
+  if (method === 'GET') return jsonResponse(await listRows(env, 'bookings'));
+
+  if (method === 'POST') {
+    const b = await request.json();
+    const newId = b.id || `BUK-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
+    await env.DB.prepare(
+      `INSERT INTO bookings (
+        id, offer_id, guest_name, guest_email, guest_phone, guest_address, wohnung,
+        check_in, check_out, persons, early_checkin, late_checkout, final_cleaning,
+        dog_fee, dog_count, projekt_space, projekt_space_cleaning,
+        total, deposit, down_payment, remaining, status
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      newId, b.offerId || null, b.guestName, b.guestEmail, b.guestPhone || '', b.guestAddress || '',
+      b.wohnung, b.checkIn, b.checkOut, b.persons || 1,
+      boolToInt(b.earlyCheckin), boolToInt(b.lateCheckout), boolToInt(b.finalCleaning),
+      boolToInt(b.dogFee), b.dogCount || 1, boolToInt(b.projektSpace), boolToInt(b.projektSpaceCleaning),
+      b.total || 0, b.deposit || 0, b.downPayment || 0, b.remaining || 0, b.status || 'awaiting_deposit'
+    ).run();
+    return jsonResponse(await getRow(env, 'bookings', newId), 201);
+  }
+
+  if (method === 'PUT' && id) {if (method === 'GET') {
+    const { results } = await env.DB.prepare('SELECT key, value_json FROM settings').all();
+    const out = {};
+    for (const row of results) out[row.key] = JSON.parse(row.value_json);
+    return jsonResponse(out);
+  }
+
+  if (method === 'PUT' && key) {
+    const body = await request.json();
+    await env.DB.prepare(
+      `INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')`
+    ).bind(key, JSON.stringify(body)).run();
+    return jsonResponse({ saved: true });
+  }
+
+  return errorResponse('Methode nicht unterstützt', 405);
+}
+
+// ---------------------------------------------------------------------------
+// Löschkonzept (Art. 5 Abs. 1 lit. e DSGVO — Speicherbegrenzung)
+//
+// - Anfragen ohne Buchung (status 'new'/'rejected'): gelöscht nach X Monaten
+// - Angebote ohne Buchung (status 'sent'): gelöscht nach X Monaten
+// - Buchungen: NICHT gelöscht (Referenz für Rechnungen/Statistik), aber die
+//   Gästedaten werden nach X Jahren nach Abreise ANONYMISIERT
+// - Rechnungen: werden NIE automatisch gelöscht (10 Jahre Aufbewahrungspflicht
+//   nach § 147 AO) — das übernimmt bewusst kein Automatismus.
+// ---------------------------------------------------------------------------
+
+async function getRetentionPolicy(env) {
+  const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'retention_policy'`).first();
+  const defaults = { inquiryMonths: 12, offerMonths: 12, bookingAnonymizeYears: 3 };
+  if (!row) return defaults;
+  try {
+    return { ...defaults, ...JSON.parse(row.value_json) };
+  } catch (e) {
+    return defaults;
+  }
+}
+
+async function logRetentionAction(env, action, table, recordId, reason) {
+  await env.DB.prepare(
+    `INSERT INTO retention_log (action, table_name, record_id, reason) VALUES (?, ?, ?, ?)`
+  ).bind(action, table, recordId, reason).run();
+}
+
+// dryRun = true: nur ermitteln, was betroffen wäre, ohne etwas zu verändern.
+async function runRetentionCleanup(env, dryRun) {
+  const policy = await getRetentionPolicy(env);
+  const report = { staleInquiries: [], staleOffers: [], bookingsToAnonymize: [] };
+
+  const staleInquiries = await env.DB.prepare(
+    `SELECT id, name, status, created_at FROM inquiries
+     WHERE status IN ('new', 'rejected')
+     AND created_at < datetime('now', '-' || ? || ' months')`
+  ).bind(policy.inquiryMonths).all();
+  report.staleInquiries = staleInquiries.results;
+
+  const staleOffers = await env.DB.prepare(
+    `SELECT id, guest_name, status, created_at FROM offers
+     WHERE status = 'sent'
+     AND created_at < datetime('now', '-' || ? || ' months')`
+  ).bind(policy.offerMonths).all();
+  report.staleOffers = staleOffers.results;
+
+  const oldBookings = await env.DB.prepare(
+    `SELECT id, guest_name, check_out FROM bookings
+     WHERE check_out < datetime('now', '-' || ? || ' years')
+     AND guest_name != '[Gelöscht]'`
+  ).bind(policy.bookingAnonymizeYears).all();
+  report.bookingsToAnonymize = oldBookings.results;
+
+  if (!dryRun) {
+    for (const inq of report.staleInquiries) {
+      await env.DB.prepare(`DELETE FROM inquiries WHERE id = ?`).bind(inq.id).run();
+      await logRetentionAction(env, 'deleted', 'inquiries', inq.id, `Anfrage älter als ${policy.inquiryMonths} Monate, Status: ${inq.status}`);
+    }
+    for (const off of report.staleOffers) {
+      await env.DB.prepare(`DELETE FROM offers WHERE id = ?`).bind(off.id).run();
+      await logRetentionAction(env, 'deleted', 'offers', off.id, `Angebot älter als ${policy.offerMonths} Monate, nie gebucht`);
+    }
+    for (const b of report.bookingsToAnonymize) {
+      await env.DB.prepare(
+        `UPDATE bookings SET guest_name='[Gelöscht]', guest_email='[Gelöscht]', guest_phone='', guest_address='' WHERE id = ?`
+      ).bind(b.id).run();
+      await logRetentionAction(env, 'anonymized', 'bookings', b.id, `Buchung länger als ${policy.bookingAnonymizeYears} Jahre nach Abreise — Gästedaten anonymisiert (Rechnung bleibt unberührt)`);
+    }
+  }
+
+  return report;
+}
+
+async function handleRetentionPreview(request, env) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+  const report = await runRetentionCleanup(env, true);
+  return jsonResponse(report);
+}
+
+async function handleRetentionRun(request, env) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+  const report = await runRetentionCleanup(env, false);
+  return jsonResponse({ executed: true, ...report });
+}
+
+async function handleRetentionLog(request, env) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+  return jsonResponse(await listRows(env, 'retention_log', 'executed_at DESC'));
+}
+
+// ---------------------------------------------------------------------------
+// Airbnb-Export: NUR bestätigte Buchungen (status IN awaiting_downpayment,
+// confirmed, completed — d.h. mindestens die Kaution ist bestätigt und die
+// Buchung ist damit verbindlich; "awaiting_deposit" zählt bewusst NICHT als
+// bestätigt und blockiert Airbnb nicht).
+// ---------------------------------------------------------------------------
+
+function toIcsDate(dateStr) {
+  return dateStr.replace(/-/g, '');
+}
+
+async function handleExportIcs(request, env, wohnungParam) {
+  const validWohnungen = ['wohnung1', 'wohnung2', 'both'];
+  if (!validWohnungen.includes(wohnungParam)) {
+    return new Response('Ungültiger Parameter "wohnung" (erwartet: wohnung1, wohnung2 oder both)', { status: 400 });
+  }
+
+  // "both"-Buchungen blockieren zusätzlich auch die Einzelwohnungen, da bei
+  // Buchung beider Wohnungen natürlich auch jede einzelne belegt ist.
+  const wohnungFilter = wohnungParam === 'both'
+    ? `wohnung IN ('wohnung1', 'wohnung2', 'both')`
+    : `wohnung IN (?, 'both')`;
+
+  const query = `
+    SELECT id, check_in, check_out, guest_name
+    FROM bookings
+    WHERE status IN ('awaiting_downpayment', 'confirmed', 'completed')
+    AND ${wohnungFilter}
+  `;
+
+  const stmt = wohnungParam === 'both'
+    ? env.DB.prepare(query)
+    : env.DB.prepare(query).bind(wohnungParam);
+
+  const { results } = await stmt.all();
+
+  let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Greenhouse Market//Booking Export//DE\r\nCALSCALE:GREGORIAN\r\n';
+  for (const b of results) {
+    ics += 'BEGIN:VEVENT\r\n';
+    ics += `UID:${b.id}@greenhouse-fuerstenberg.de\r\n`;
+    ics += `DTSTART;VALUE=DATE:${toIcsDate(b.check_in)}\r\n`;
+    ics += `DTEND;VALUE=DATE:${toIcsDate(b.check_out)}\r\n`;
+    ics += `SUMMARY:Belegt (Greenhouse Booking)\r\n`;
+    ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
+    ics += 'END:VEVENT\r\n';
+  }}
+  ics += 'END:VCALENDAR\r\n';
+
+  return new Response(ics, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/calendar; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=1800', // 30 Min. Cache, Airbnb ruft ohnehin nur alle paar Stunden ab
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Bestehender iCal-Proxy (Airbnb -> Website), unverändert aus dem bisherigen
+// Worker übernommen.
+// ---------------------------------------------------------------------------
+
+async function handleIcalProxy(url) {
+  const target = url.searchParams.get('url');
+  if (!target) return new Response('Missing "url" query parameter', { status: 400 });
+
+  let parsedTarget;
+  try {
+    parsedTarget = new URL(target);
+  } catch (e) {
+    return new Response('Invalid "url" parameter', { status: 400 });
+  }
+
+  const allowedHosts = ['www.airbnb.de', 'www.airbnb.com', 'airbnb.de', 'airbnb.com'];
+  if (!allowedHosts.includes(parsedTarget.hostname)) {
+    return new Response('Host not allowed', { status: 403 });
+  }
+
+  try {
+    const upstreamResponse = await fetch(parsedTarget.toString(), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; GreenhouseCalendarSync/1.0)',
+        'Accept': 'text/calendar, text/plain, */*',
+      },
+    });
+    if (!upstreamResponse.ok) {
+      return new Response(`Upstream error: ${upstreamResponse.status} ${upstreamResponse.statusText}`, { status: 502 });
+    }
+    const text = await upstreamResponse.text();
+    return new Response(text, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/calendar; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store',
+      },
+    });
+  } catch (err) {
+    return new Response('Fetch failed: ' + err.message, { status: 502 });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Haupt-Router
+// ---------------------------------------------------------------------------
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const method = request.method;
+    const path = url.pathname;
+
+    if (method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        },
+      });
+    }
+
+    try {
+      if (path === '/ical') return handleIcalProxy(url);
+
+      if (path === '/export.ics') {
+        const wohnung = url.searchParams.get('wohnung') || 'wohnung1';
+        return handleExportIcs(request, env, wohnung);
+      }
+
+      if (path === '/api/retention/preview' && method === 'GET') return await handleRetentionPreview(request, env);
+      if (path === '/api/retention/run' && method === 'POST') return await handleRetentionRun(request, env);
+      if (path === '/api/retention/log' && method === 'GET') return await handleRetentionLog(request, env);
+
+      const apiMatch = path.match(/^\/api\/(guests|inquiries|offers|bookings|invoices|settings)(?:\/([^/]+))?$/);
+      if (apiMatch) {
+        const [, resource, id] = apiMatch;
+        switch (resource) {
+          case 'guests': return await handleGuests(request, env, method, id);
+          case 'inquiries': return await handleInquiries(request, env, method, id);
+          case 'offers': return await handleOffers(request, env, method, id);
+          case 'bookings': return await handleBookings(request, env, method, id);
+          case 'invoices': return await handleInvoices(request, env, method, id);
+          case 'settings': return await handleSettings(request, env, method, id);
+        }
+      }
+
+      // Alles andere: statische Website ausliefern (index.html, Bilder, ...)
+      return env.ASSETS.fetch(request);
+    } catch (err) {
+      console.error('Worker error:', err);
+      return errorResponse('Serverfehler: ' + err.message, 500);
+    }
+  },
+
+  // Wird automatisch per Cron Trigger ausgeführt (siehe wrangler.jsonc,
+  // standardmäßig wöchentlich). Löscht/anonymisiert Daten gemäß Löschkonzept.
+  // Rechnungen sind davon ausdrücklich NIE betroffen (10 Jahre Pflicht-
+  // aufbewahrung nach § 147 AO).
+  async scheduled(controller, env, ctx) {
+    const report = await runRetentionCleanup(env, false);
+    console.log(
+      `Löschkonzept ausgeführt: ${report.staleInquiries.length} Anfragen gelöscht, ` +
+      `${report.staleOffers.length} Angebote gelöscht, ` +
+      `${report.bookingsToAnonymize.length} Buchungen anonymisiert.`
+    );
+  },
+};
