@@ -638,7 +638,7 @@ export default {
       if (path === '/api/retention/preview' && method === 'GET') return await handleRetentionPreview(request, env);
       if (path === '/api/retention/run' && method === 'POST') return await handleRetentionRun(request, env);
       if (path === '/api/retention/log' && method === 'GET') return await handleRetentionLog(request, env);
-      if (path === '/api/change-password' && method === 'POST') return await handleChangePassword(request, env);
+      if (path === '/api/admin-update' && method === 'POST') return await handleChangePassword(request, env);
 
       const apiMatch = path.match(/^\/api\/(guests|inquiries|offers|bookings|invoices|settings)(?:\/([^/]+))?$/);
       if (apiMatch) {
