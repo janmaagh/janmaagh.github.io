@@ -22,8 +22,6 @@ function errorResponse(message, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
-// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
-// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
 function checkAuth(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const token = authHeader.replace('Bearer ', '');
@@ -36,10 +34,6 @@ function requireAuth(request, env) {
   }
   return null;
 }
-
-// ---------------------------------------------------------------------------
-// Hilfsfunktionen für generische CRUD-Operationen auf einer Tabelle
-// ---------------------------------------------------------------------------
 
 async function listRows(env, table, orderBy = 'created_at DESC') {
   const { results } = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all();
@@ -54,8 +48,6 @@ async function deleteRow(env, table, id) {
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
 }
 
-// Wandelt ein JS-Objekt (camelCase) in eine INSERT/UPDATE-freundliche Form um,
-// basierend auf einer expliziten Feldliste (snake_case Spaltennamen -> camelCase Keys).
 function pick(obj, fieldMap) {
   const out = {};
   for (const [column, key] of Object.entries(fieldMap)) {
@@ -67,10 +59,6 @@ function pick(obj, fieldMap) {
 function boolToInt(v) {
   return v ? 1 : 0;
 }
-
-// ---------------------------------------------------------------------------
-// Gäste
-// ---------------------------------------------------------------------------
 
 const GUEST_FIELDS = {
   name: 'name', email: 'email', phone: 'phone',
@@ -112,10 +100,6 @@ async function handleGuests(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
-// ---------------------------------------------------------------------------
-// Anfragen (POST ist öffentlich — kommt vom Gäste-Tool ohne Login)
-// ---------------------------------------------------------------------------
-
 const INQUIRY_FIELDS = {
   name: 'name', email: 'email', phone: 'phone',
   street: 'street', house_number: 'houseNumber', zip: 'zip', city: 'city', address: 'address',
@@ -132,7 +116,6 @@ async function handleInquiries(request, env, method, id) {
   }
 
   if (method === 'POST') {
-    // Öffentlich erreichbar — jeder Gast darf eine Anfrage einreichen.
     const body = await request.json();
     if (!body.name || !body.email || !body.checkIn || !body.checkOut || !body.wohnung) {
       return errorResponse('Pflichtfelder fehlen (name, email, checkIn, checkOut, wohnung)');
@@ -158,7 +141,8 @@ async function handleInquiries(request, env, method, id) {
     const created = await getRow(env, 'inquiries', newId);
     return jsonResponse(created, 201);
   }
-const authFail = requireAuth(request, env);
+
+  const authFail = requireAuth(request, env);
   if (authFail) return authFail;
 
   if (method === 'PUT' && id) {
@@ -182,10 +166,6 @@ const authFail = requireAuth(request, env);
 
   return errorResponse('Methode nicht unterstützt', 405);
 }
-
-// ---------------------------------------------------------------------------
-// Buchungen — DIESE Tabelle speist den Airbnb-Export!
-// ---------------------------------------------------------------------------
 
 async function handleBookings(request, env, method, id) {
   const authFail = requireAuth(request, env);
@@ -213,7 +193,120 @@ async function handleBookings(request, env, method, id) {
     return jsonResponse(await getRow(env, 'bookings', newId), 201);
   }
 
-  if (method === 'PUT' && id) {if (method === 'GET') {
+  if (method === 'PUT' && id) {
+    const b = await request.json();
+    const existing = await getRow(env, 'bookings', id);
+    if (!existing) return errorResponse('Buchung nicht gefunden', 404);
+    await env.DB.prepare(
+      `UPDATE bookings SET deposit_paid=?, down_payment_paid=?, remaining_paid=?, status=?
+       WHERE id=?`
+    ).bind(
+      b.depositPaid !== undefined ? boolToInt(b.depositPaid) : existing.deposit_paid,
+      b.downPaymentPaid !== undefined ? boolToInt(b.downPaymentPaid) : existing.down_payment_paid,
+      b.remainingPaid !== undefined ? boolToInt(b.remainingPaid) : existing.remaining_paid,
+      b.status || existing.status,
+      id
+    ).run();
+    return jsonResponse(await getRow(env, 'bookings', id));
+  }
+
+  if (method === 'DELETE' && id) {
+    await deleteRow(env, 'bookings', id);
+    return jsonResponse({ deleted: true });
+  }
+
+  return errorResponse('Methode nicht unterstützt', 405);
+}
+
+async function handleOffers(request, env, method, id) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+
+  if (method === 'GET') return jsonResponse(await listRows(env, 'offers'));
+
+  if (method === 'POST') {
+    const o = await request.json();
+    const newId = o.id || `ANG-${Date.now()}`;
+    await env.DB.prepare(
+      `INSERT INTO offers (
+        id, guest_id, source_inquiry_id, guest_name, guest_email, guest_phone, guest_address,
+        wohnung, check_in, check_out, persons, early_checkin, late_checkout, final_cleaning,
+        dog_fee, dog_count, projekt_space, projekt_space_cleaning, discount_percent,
+        total, nights, status
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      newId, o.guestId || null, o.sourceInquiryId || null, o.guestName, o.guestEmail,
+      o.guestPhone || '', o.guestAddress || '', o.wohnung, o.checkIn, o.checkOut, o.persons || 1,
+      boolToInt(o.earlyCheckin), boolToInt(o.lateCheckout), boolToInt(o.finalCleaning),
+      boolToInt(o.dogFee), o.dogCount || 1, boolToInt(o.projektSpace), boolToInt(o.projektSpaceCleaning),
+      o.discountPercent || 0, o.total || 0, o.nights || 0, o.status || 'sent'
+    ).run();
+    return jsonResponse(await getRow(env, 'offers', newId), 201);
+  }
+
+  if (method === 'PUT' && id) {
+    const o = await request.json();
+    await env.DB.prepare(`UPDATE offers SET status=? WHERE id=?`).bind(o.status, id).run();
+    return jsonResponse(await getRow(env, 'offers', id));
+  }
+
+  if (method === 'DELETE' && id) {
+    await deleteRow(env, 'offers', id);
+    return jsonResponse({ deleted: true });
+  }
+
+  return errorResponse('Methode nicht unterstützt', 405);
+}
+
+async function handleInvoices(request, env, method, id) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+
+  if (method === 'GET') {
+    const rows = await listRows(env, 'invoices');
+    return jsonResponse(rows.map(r => ({ ...r, items: JSON.parse(r.items_json) })));
+  }
+
+  if (method === 'POST') {
+    const inv = await request.json();
+    const newId = inv.id || `RE-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
+    await env.DB.prepare(
+      `INSERT INTO invoices (
+        id, source_ref, wohnung, guest_name, guest_email, guest_address, invoice_date,
+        service_start, service_end, items_json, vat_mode, discount_percent,
+        raw_net, discount_amount, net, vat_rate, vat_amount, gross, notes, status
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      newId, inv.sourceRef || '', inv.wohnung || 'wohnung1', inv.guestName, inv.guestEmail,
+      inv.guestAddress, inv.invoiceDate, inv.serviceStart || '', inv.serviceEnd || '',
+      JSON.stringify(inv.items || []), inv.vatMode || 'kleinunternehmer', inv.discountPercent || 0,
+      inv.rawNet || 0, inv.discountAmount || 0, inv.net || 0, inv.vatRate || 0,
+      inv.vatAmount || 0, inv.gross || 0, inv.notes || '', 'open'
+    ).run();
+    const created = await getRow(env, 'invoices', newId);
+    return jsonResponse({ ...created, items: JSON.parse(created.items_json) }, 201);
+  }
+
+  if (method === 'PUT' && id) {
+    const inv = await request.json();
+    await env.DB.prepare(`UPDATE invoices SET status=? WHERE id=?`).bind(inv.status, id).run();
+    const updated = await getRow(env, 'invoices', id);
+    return jsonResponse({ ...updated, items: JSON.parse(updated.items_json) });
+  }
+
+  if (method === 'DELETE' && id) {
+    await deleteRow(env, 'invoices', id);
+    return jsonResponse({ deleted: true });
+  }
+
+  return errorResponse('Methode nicht unterstützt', 405);
+}
+
+async function handleSettings(request, env, method, key) {
+  const authFail = requireAuth(request, env);
+  if (authFail) return authFail;
+
+  if (method === 'GET') {
     const { results } = await env.DB.prepare('SELECT key, value_json FROM settings').all();
     const out = {};
     for (const row of results) out[row.key] = JSON.parse(row.value_json);
@@ -232,17 +325,6 @@ async function handleBookings(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
-// ---------------------------------------------------------------------------
-// Löschkonzept (Art. 5 Abs. 1 lit. e DSGVO — Speicherbegrenzung)
-//
-// - Anfragen ohne Buchung (status 'new'/'rejected'): gelöscht nach X Monaten
-// - Angebote ohne Buchung (status 'sent'): gelöscht nach X Monaten
-// - Buchungen: NICHT gelöscht (Referenz für Rechnungen/Statistik), aber die
-//   Gästedaten werden nach X Jahren nach Abreise ANONYMISIERT
-// - Rechnungen: werden NIE automatisch gelöscht (10 Jahre Aufbewahrungspflicht
-//   nach § 147 AO) — das übernimmt bewusst kein Automatismus.
-// ---------------------------------------------------------------------------
-
 async function getRetentionPolicy(env) {
   const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'retention_policy'`).first();
   const defaults = { inquiryMonths: 12, offerMonths: 12, bookingAnonymizeYears: 3 };
@@ -260,7 +342,6 @@ async function logRetentionAction(env, action, table, recordId, reason) {
   ).bind(action, table, recordId, reason).run();
 }
 
-// dryRun = true: nur ermitteln, was betroffen wäre, ohne etwas zu verändern.
 async function runRetentionCleanup(env, dryRun) {
   const policy = await getRetentionPolicy(env);
   const report = { staleInquiries: [], staleOffers: [], bookingsToAnonymize: [] };
@@ -326,13 +407,6 @@ async function handleRetentionLog(request, env) {
   return jsonResponse(await listRows(env, 'retention_log', 'executed_at DESC'));
 }
 
-// ---------------------------------------------------------------------------
-// Airbnb-Export: NUR bestätigte Buchungen (status IN awaiting_downpayment,
-// confirmed, completed — d.h. mindestens die Kaution ist bestätigt und die
-// Buchung ist damit verbindlich; "awaiting_deposit" zählt bewusst NICHT als
-// bestätigt und blockiert Airbnb nicht).
-// ---------------------------------------------------------------------------
-
 function toIcsDate(dateStr) {
   return dateStr.replace(/-/g, '');
 }
@@ -343,8 +417,6 @@ async function handleExportIcs(request, env, wohnungParam) {
     return new Response('Ungültiger Parameter "wohnung" (erwartet: wohnung1, wohnung2 oder both)', { status: 400 });
   }
 
-  // "both"-Buchungen blockieren zusätzlich auch die Einzelwohnungen, da bei
-  // Buchung beider Wohnungen natürlich auch jede einzelne belegt ist.
   const wohnungFilter = wohnungParam === 'both'
     ? `wohnung IN ('wohnung1', 'wohnung2', 'both')`
     : `wohnung IN (?, 'both')`;
@@ -371,7 +443,7 @@ async function handleExportIcs(request, env, wohnungParam) {
     ics += `SUMMARY:Belegt (Greenhouse Booking)\r\n`;
     ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
     ics += 'END:VEVENT\r\n';
-  }}
+  }
   ics += 'END:VCALENDAR\r\n';
 
   return new Response(ics, {
@@ -379,15 +451,10 @@ async function handleExportIcs(request, env, wohnungParam) {
     headers: {
       'Content-Type': 'text/calendar; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=1800', // 30 Min. Cache, Airbnb ruft ohnehin nur alle paar Stunden ab
+      'Cache-Control': 'public, max-age=1800',
     },
   });
 }
-
-// ---------------------------------------------------------------------------
-// Bestehender iCal-Proxy (Airbnb -> Website), unverändert aus dem bisherigen
-// Worker übernommen.
-// ---------------------------------------------------------------------------
 
 async function handleIcalProxy(url) {
   const target = url.searchParams.get('url');
@@ -428,10 +495,6 @@ async function handleIcalProxy(url) {
     return new Response('Fetch failed: ' + err.message, { status: 502 });
   }
 }
-
-// ---------------------------------------------------------------------------
-// Haupt-Router
-// ---------------------------------------------------------------------------
 
 export default {
   async fetch(request, env) {
@@ -475,7 +538,6 @@ export default {
         }
       }
 
-      // Alles andere: statische Website ausliefern (index.html, Bilder, ...)
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error('Worker error:', err);
@@ -483,10 +545,6 @@ export default {
     }
   },
 
-  // Wird automatisch per Cron Trigger ausgeführt (siehe wrangler.jsonc,
-  // standardmäßig wöchentlich). Löscht/anonymisiert Daten gemäß Löschkonzept.
-  // Rechnungen sind davon ausdrücklich NIE betroffen (10 Jahre Pflicht-
-  // aufbewahrung nach § 147 AO).
   async scheduled(controller, env, ctx) {
     const report = await runRetentionCleanup(env, false);
     console.log(
