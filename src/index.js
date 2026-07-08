@@ -2,10 +2,6 @@
 // Greenhouse Market — Backend-Worker
 // Liefert die statische Website aus UND stellt die API für das Booking-System
 // bereit (Gäste, Anfragen, Angebote, Buchungen, Rechnungen, Einstellungen).
-//
-// WICHTIG: Dies ist der Startpunkt der Datenbank-Anbindung. Die React-Tools
-// (Greenhouse___Booking.html, Greenhouse___Buchung.html) müssen im nächsten
-// Schritt noch umgebaut werden, damit sie diese API statt localStorage nutzen.
 // ============================================================================
 
 function jsonResponse(data, status = 200) {
@@ -22,10 +18,6 @@ function errorResponse(message, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
-// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
-// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
-// Wandelt ein Passwort in einen SHA-256-Hash um (Hex-String). So liegt das
-// eigentliche Passwort nie im Klartext in der Datenbank.
 async function hashPassword(password) {
   const encoder = new TextEncoder();
   const data = encoder.encode(password);
@@ -33,15 +25,6 @@ async function hashPassword(password) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
-// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
-//
-// Zwei mögliche Quellen für das gültige Passwort:
-// 1. Ein in der Datenbank gespeicherter Passwort-Hash (wurde übers Booking-Tool
-//    selbst gesetzt/geändert) — wird bevorzugt geprüft, falls vorhanden.
-// 2. Fallback: das Cloudflare-Secret ADMIN_TOKEN (der ursprüngliche, beim
-//    Einrichten per Dashboard/Wrangler gesetzte Wert) — greift nur, solange
-//    noch kein Passwort in der Datenbank gesetzt wurde.
 async function checkAuth(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const token = authHeader.replace('Bearer ', '');
@@ -64,10 +47,6 @@ async function requireAuth(request, env) {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Hilfsfunktionen für generische CRUD-Operationen auf einer Tabelle
-// ---------------------------------------------------------------------------
-
 async function listRows(env, table, orderBy = 'created_at DESC') {
   const { results } = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all();
   return results;
@@ -81,8 +60,6 @@ async function deleteRow(env, table, id) {
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
 }
 
-// Wandelt ein JS-Objekt (camelCase) in eine INSERT/UPDATE-freundliche Form um,
-// basierend auf einer expliziten Feldliste (snake_case Spaltennamen -> camelCase Keys).
 function pick(obj, fieldMap) {
   const out = {};
   for (const [column, key] of Object.entries(fieldMap)) {
@@ -94,10 +71,6 @@ function pick(obj, fieldMap) {
 function boolToInt(v) {
   return v ? 1 : 0;
 }
-
-// ---------------------------------------------------------------------------
-// Gäste
-// ---------------------------------------------------------------------------
 
 const GUEST_FIELDS = {
   name: 'name', email: 'email', phone: 'phone',
@@ -139,10 +112,6 @@ async function handleGuests(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
-// ---------------------------------------------------------------------------
-// Anfragen (POST ist öffentlich — kommt vom Gäste-Tool ohne Login)
-// ---------------------------------------------------------------------------
-
 const INQUIRY_FIELDS = {
   name: 'name', email: 'email', phone: 'phone',
   street: 'street', house_number: 'houseNumber', zip: 'zip', city: 'city', address: 'address',
@@ -159,7 +128,6 @@ async function handleInquiries(request, env, method, id) {
   }
 
   if (method === 'POST') {
-    // Öffentlich erreichbar — jeder Gast darf eine Anfrage einreichen.
     const body = await request.json();
     if (!body.name || !body.email || !body.checkIn || !body.checkOut || !body.wohnung) {
       return errorResponse('Pflichtfelder fehlen (name, email, checkIn, checkOut, wohnung)');
@@ -210,10 +178,6 @@ async function handleInquiries(request, env, method, id) {
 
   return errorResponse('Methode nicht unterstützt', 405);
 }
-
-// ---------------------------------------------------------------------------
-// Buchungen — DIESE Tabelle speist den Airbnb-Export!
-// ---------------------------------------------------------------------------
 
 async function handleBookings(request, env, method, id) {
   const authFail = await requireAuth(request, env);
@@ -266,10 +230,6 @@ async function handleBookings(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
-// ---------------------------------------------------------------------------
-// Angebote
-// ---------------------------------------------------------------------------
-
 async function handleOffers(request, env, method, id) {
   const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
@@ -298,7 +258,43 @@ async function handleOffers(request, env, method, id) {
 
   if (method === 'PUT' && id) {
     const o = await request.json();
-    await env.DB.prepare(`UPDATE offers SET status=? WHERE id=?`).bind(o.status, id).run();
+    const existing = await getRow(env, 'offers', id);
+    if (!existing) return errorResponse('Angebot nicht gefunden', 404);
+
+    const merged = {
+      guest_id: o.guestId !== undefined ? o.guestId : existing.guest_id,
+      guest_name: o.guestName !== undefined ? o.guestName : existing.guest_name,
+      guest_email: o.guestEmail !== undefined ? o.guestEmail : existing.guest_email,
+      guest_phone: o.guestPhone !== undefined ? o.guestPhone : existing.guest_phone,
+      guest_address: o.guestAddress !== undefined ? o.guestAddress : existing.guest_address,
+      wohnung: o.wohnung !== undefined ? o.wohnung : existing.wohnung,
+      check_in: o.checkIn !== undefined ? o.checkIn : existing.check_in,
+      check_out: o.checkOut !== undefined ? o.checkOut : existing.check_out,
+      persons: o.persons !== undefined ? o.persons : existing.persons,
+      early_checkin: o.earlyCheckin !== undefined ? boolToInt(o.earlyCheckin) : existing.early_checkin,
+      late_checkout: o.lateCheckout !== undefined ? boolToInt(o.lateCheckout) : existing.late_checkout,
+      final_cleaning: o.finalCleaning !== undefined ? boolToInt(o.finalCleaning) : existing.final_cleaning,
+      dog_fee: o.dogFee !== undefined ? boolToInt(o.dogFee) : existing.dog_fee,
+      dog_count: o.dogCount !== undefined ? o.dogCount : existing.dog_count,
+      projekt_space: o.projektSpace !== undefined ? boolToInt(o.projektSpace) : existing.projekt_space,
+      projekt_space_cleaning: o.projektSpaceCleaning !== undefined ? boolToInt(o.projektSpaceCleaning) : existing.projekt_space_cleaning,
+      discount_percent: o.discountPercent !== undefined ? o.discountPercent : existing.discount_percent,
+      total: o.total !== undefined ? o.total : existing.total,
+      nights: o.nights !== undefined ? o.nights : existing.nights,
+      status: o.status !== undefined ? o.status : existing.status,
+    };
+
+    await env.DB.prepare(
+      `UPDATE offers SET guest_id=?, guest_name=?, guest_email=?, guest_phone=?, guest_address=?,
+       wohnung=?, check_in=?, check_out=?, persons=?, early_checkin=?, late_checkout=?, final_cleaning=?,
+       dog_fee=?, dog_count=?, projekt_space=?, projekt_space_cleaning=?, discount_percent=?,
+       total=?, nights=?, status=? WHERE id=?`
+    ).bind(
+      merged.guest_id, merged.guest_name, merged.guest_email, merged.guest_phone, merged.guest_address,
+      merged.wohnung, merged.check_in, merged.check_out, merged.persons, merged.early_checkin, merged.late_checkout,
+      merged.final_cleaning, merged.dog_fee, merged.dog_count, merged.projekt_space, merged.projekt_space_cleaning,
+      merged.discount_percent, merged.total, merged.nights, merged.status, id
+    ).run();
     return jsonResponse(await getRow(env, 'offers', id));
   }
 
@@ -309,10 +305,6 @@ async function handleOffers(request, env, method, id) {
 
   return errorResponse('Methode nicht unterstützt', 405);
 }
-
-// ---------------------------------------------------------------------------
-// Rechnungen
-// ---------------------------------------------------------------------------
 
 async function handleInvoices(request, env, method, id) {
   const authFail = await requireAuth(request, env);
@@ -345,7 +337,42 @@ async function handleInvoices(request, env, method, id) {
 
   if (method === 'PUT' && id) {
     const inv = await request.json();
-    await env.DB.prepare(`UPDATE invoices SET status=? WHERE id=?`).bind(inv.status, id).run();
+    const existing = await getRow(env, 'invoices', id);
+    if (!existing) return errorResponse('Rechnung nicht gefunden', 404);
+
+    const merged = {
+      source_ref: inv.sourceRef !== undefined ? inv.sourceRef : existing.source_ref,
+      wohnung: inv.wohnung !== undefined ? inv.wohnung : existing.wohnung,
+      guest_name: inv.guestName !== undefined ? inv.guestName : existing.guest_name,
+      guest_email: inv.guestEmail !== undefined ? inv.guestEmail : existing.guest_email,
+      guest_address: inv.guestAddress !== undefined ? inv.guestAddress : existing.guest_address,
+      invoice_date: inv.invoiceDate !== undefined ? inv.invoiceDate : existing.invoice_date,
+      service_start: inv.serviceStart !== undefined ? inv.serviceStart : existing.service_start,
+      service_end: inv.serviceEnd !== undefined ? inv.serviceEnd : existing.service_end,
+      items_json: inv.items !== undefined ? JSON.stringify(inv.items) : existing.items_json,
+      vat_mode: inv.vatMode !== undefined ? inv.vatMode : existing.vat_mode,
+      discount_percent: inv.discountPercent !== undefined ? inv.discountPercent : existing.discount_percent,
+      raw_net: inv.rawNet !== undefined ? inv.rawNet : existing.raw_net,
+      discount_amount: inv.discountAmount !== undefined ? inv.discountAmount : existing.discount_amount,
+      net: inv.net !== undefined ? inv.net : existing.net,
+      vat_rate: inv.vatRate !== undefined ? inv.vatRate : existing.vat_rate,
+      vat_amount: inv.vatAmount !== undefined ? inv.vatAmount : existing.vat_amount,
+      gross: inv.gross !== undefined ? inv.gross : existing.gross,
+      notes: inv.notes !== undefined ? inv.notes : existing.notes,
+      status: inv.status !== undefined ? inv.status : existing.status,
+    };
+
+    await env.DB.prepare(
+      `UPDATE invoices SET source_ref=?, wohnung=?, guest_name=?, guest_email=?, guest_address=?,
+       invoice_date=?, service_start=?, service_end=?, items_json=?, vat_mode=?, discount_percent=?,
+       raw_net=?, discount_amount=?, net=?, vat_rate=?, vat_amount=?, gross=?, notes=?, status=?
+       WHERE id=?`
+    ).bind(
+      merged.source_ref, merged.wohnung, merged.guest_name, merged.guest_email, merged.guest_address,
+      merged.invoice_date, merged.service_start, merged.service_end, merged.items_json, merged.vat_mode,
+      merged.discount_percent, merged.raw_net, merged.discount_amount, merged.net, merged.vat_rate,
+      merged.vat_amount, merged.gross, merged.notes, merged.status, id
+    ).run();
     const updated = await getRow(env, 'invoices', id);
     return jsonResponse({ ...updated, items: JSON.parse(updated.items_json) });
   }
@@ -358,9 +385,17 @@ async function handleInvoices(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
-// ---------------------------------------------------------------------------
-// Einstellungen (Preise, Firmendaten, Stornobedingungen, Anzahlungs-%)
-// ---------------------------------------------------------------------------
+async function handlePublicSettings(request, env) {
+  const pricesRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'prices'`).first();
+  const policyRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'cancellation_policy'`).first();
+  const downPaymentRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'down_payment_percent'`).first();
+
+  return jsonResponse({
+    prices: pricesRow ? JSON.parse(pricesRow.value_json) : null,
+    cancellationPolicy: policyRow ? JSON.parse(policyRow.value_json) : null,
+    downPaymentPercent: downPaymentRow ? JSON.parse(downPaymentRow.value_json) : null,
+  });
+}
 
 async function handleSettings(request, env, method, key) {
   const authFail = await requireAuth(request, env);
@@ -385,11 +420,6 @@ async function handleSettings(request, env, method, key) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
-// ---------------------------------------------------------------------------
-// Passwort ändern — erfordert gültige aktuelle Authentifizierung.
-// Speichert nur einen SHA-256-Hash, nie das Passwort im Klartext.
-// ---------------------------------------------------------------------------
-
 async function handleChangePassword(request, env) {
   const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
@@ -408,14 +438,6 @@ async function handleChangePassword(request, env) {
 
   return jsonResponse({ changed: true });
 }
-
-// ---------------------------------------------------------------------------
-// Datensicherung — kompletter Export aller Tabellen als JSON.
-// Manuell jederzeit abrufbar, zusätzlich läuft wöchentlich ein automatischer
-// Schnappschuss (siehe scheduled()). Alte automatische Schnappschüsse werden
-// nach einer Weile aufgeräumt (die letzten 12 — ca. 3 Monate wöchentlich —
-// bleiben erhalten).
-// ---------------------------------------------------------------------------
 
 async function buildFullBackup(env) {
   const [guests, inquiries, offers, bookings, invoicesRaw, settingsRows] = await Promise.all([
@@ -481,22 +503,10 @@ async function handleGetBackup(request, env, id) {
 async function createAutomaticBackup(env) {
   const backup = await buildFullBackup(env);
   await env.DB.prepare('INSERT INTO backups (data_json) VALUES (?)').bind(JSON.stringify(backup)).run();
-  // Alte Schnappschüsse aufräumen — die letzten 12 (≈ 3 Monate wöchentlich) bleiben.
   await env.DB.prepare(
     `DELETE FROM backups WHERE id NOT IN (SELECT id FROM backups ORDER BY created_at DESC LIMIT 12)`
   ).run();
 }
-
-// ---------------------------------------------------------------------------
-// Löschkonzept (Art. 5 Abs. 1 lit. e DSGVO — Speicherbegrenzung)
-//
-// - Anfragen ohne Buchung (status 'new'/'rejected'): gelöscht nach X Monaten
-// - Angebote ohne Buchung (status 'sent'): gelöscht nach X Monaten
-// - Buchungen: NICHT gelöscht (Referenz für Rechnungen/Statistik), aber die
-//   Gästedaten werden nach X Jahren nach Abreise ANONYMISIERT
-// - Rechnungen: werden NIE automatisch gelöscht (10 Jahre Aufbewahrungspflicht
-//   nach § 147 AO) — das übernimmt bewusst kein Automatismus.
-// ---------------------------------------------------------------------------
 
 async function getRetentionPolicy(env) {
   const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'retention_policy'`).first();
@@ -515,7 +525,6 @@ async function logRetentionAction(env, action, table, recordId, reason) {
   ).bind(action, table, recordId, reason).run();
 }
 
-// dryRun = true: nur ermitteln, was betroffen wäre, ohne etwas zu verändern.
 async function runRetentionCleanup(env, dryRun) {
   const policy = await getRetentionPolicy(env);
   const report = { staleInquiries: [], staleOffers: [], bookingsToAnonymize: [] };
@@ -581,13 +590,6 @@ async function handleRetentionLog(request, env) {
   return jsonResponse(await listRows(env, 'retention_log', 'executed_at DESC'));
 }
 
-// ---------------------------------------------------------------------------
-// Airbnb-Export: NUR bestätigte Buchungen (status IN awaiting_downpayment,
-// confirmed, completed — d.h. mindestens die Kaution ist bestätigt und die
-// Buchung ist damit verbindlich; "awaiting_deposit" zählt bewusst NICHT als
-// bestätigt und blockiert Airbnb nicht).
-// ---------------------------------------------------------------------------
-
 function toIcsDate(dateStr) {
   return dateStr.replace(/-/g, '');
 }
@@ -598,8 +600,6 @@ async function handleExportIcs(request, env, wohnungParam) {
     return new Response('Ungültiger Parameter "wohnung" (erwartet: wohnung1, wohnung2 oder both)', { status: 400 });
   }
 
-  // "both"-Buchungen blockieren zusätzlich auch die Einzelwohnungen, da bei
-  // Buchung beider Wohnungen natürlich auch jede einzelne belegt ist.
   const wohnungFilter = wohnungParam === 'both'
     ? `wohnung IN ('wohnung1', 'wohnung2', 'both')`
     : `wohnung IN (?, 'both')`;
@@ -634,15 +634,10 @@ async function handleExportIcs(request, env, wohnungParam) {
     headers: {
       'Content-Type': 'text/calendar; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=1800', // 30 Min. Cache, Airbnb ruft ohnehin nur alle paar Stunden ab
+      'Cache-Control': 'public, max-age=1800',
     },
   });
 }
-
-// ---------------------------------------------------------------------------
-// Bestehender iCal-Proxy (Airbnb -> Website), unverändert aus dem bisherigen
-// Worker übernommen.
-// ---------------------------------------------------------------------------
 
 async function handleIcalProxy(url) {
   const target = url.searchParams.get('url');
@@ -684,10 +679,6 @@ async function handleIcalProxy(url) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Haupt-Router
-// ---------------------------------------------------------------------------
-
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -716,6 +707,7 @@ export default {
       if (path === '/api/retention/preview' && method === 'GET') return await handleRetentionPreview(request, env);
       if (path === '/api/retention/run' && method === 'POST') return await handleRetentionRun(request, env);
       if (path === '/api/retention/log' && method === 'GET') return await handleRetentionLog(request, env);
+      if (path === '/api/public-settings' && method === 'GET') return await handlePublicSettings(request, env);
       if (path === '/api/admin-update' && method === 'POST') return await handleChangePassword(request, env);
       if (path === '/api/backup' && method === 'GET') return await handleBackupNow(request, env);
       if (path === '/api/backups' && method === 'GET') return await handleListBackups(request, env);
@@ -735,7 +727,6 @@ export default {
         }
       }
 
-      // Alles andere: statische Website ausliefern (index.html, Bilder, ...)
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error('Worker error:', err);
@@ -743,10 +734,6 @@ export default {
     }
   },
 
-  // Wird automatisch per Cron Trigger ausgeführt (siehe wrangler.jsonc,
-  // standardmäßig wöchentlich). Löscht/anonymisiert Daten gemäß Löschkonzept.
-  // Rechnungen sind davon ausdrücklich NIE betroffen (10 Jahre Pflicht-
-  // aufbewahrung nach § 147 AO).
   async scheduled(controller, env, ctx) {
     const report = await runRetentionCleanup(env, false);
     console.log(
