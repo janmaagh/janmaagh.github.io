@@ -637,6 +637,158 @@
         }
 
         function BookingSystem({ authToken, onLogout, onTokenUpdate }) {
+            // Zentrale Hilfsfunktion für alle Aufrufe an die Datenbank-API — hängt
+            // automatisch Adresse und Login-Header an, wirft bei Fehlern eine
+            // aussagekräftige Meldung.
+            const apiFetch = async (path, options = {}) => {
+                const res = await fetch(`${API_BASE}${path}`, {
+                    ...options,
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+                        ...options.headers,
+                    },
+                });
+                if (!res.ok) {
+                    let message = `Serverfehler (${res.status})`;
+                    try {
+                        const data = await res.json();
+                        if (data.error) message = data.error;
+                    } catch (e) { /* ignore */ }
+                    throw new Error(message);
+                }
+                if (res.status === 204) return null;
+                return res.json();
+            };
+
+            const [dataLoadError, setDataLoadError] = useState('');
+            const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+            const mapGuestFromDb = (row) => ({
+                id: row.id,
+                name: row.name,
+                email: row.email,
+                phone: row.phone,
+                street: row.street,
+                houseNumber: row.house_number,
+                zip: row.zip,
+                city: row.city,
+                address: row.address,
+                notes: row.notes,
+            });
+
+            const mapInvoiceFromDb = (row) => ({
+                id: row.id,
+                sourceRef: row.source_ref,
+                wohnung: row.wohnung,
+                guestName: row.guest_name,
+                guestEmail: row.guest_email,
+                guestAddress: row.guest_address,
+                invoiceDate: row.invoice_date,
+                serviceStart: row.service_start,
+                serviceEnd: row.service_end,
+                items: row.items || [],
+                vatMode: row.vat_mode,
+                discountPercent: row.discount_percent,
+                rawNet: row.raw_net,
+                discount: row.discount_percent,
+                discountAmount: row.discount_amount,
+                net: row.net,
+                vatRate: row.vat_rate,
+                vatAmount: row.vat_amount,
+                gross: row.gross,
+                notes: row.notes,
+                status: row.status,
+                created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
+            });
+
+            const mapOfferFromDb = (row) => ({
+                id: row.id,
+                guestId: row.guest_id,
+                sourceInquiryId: row.source_inquiry_id,
+                guest: {
+                    id: row.guest_id,
+                    name: row.guest_name,
+                    email: row.guest_email,
+                    phone: row.guest_phone,
+                    address: row.guest_address,
+                },
+                wohnung: row.wohnung,
+                checkIn: row.check_in,
+                checkOut: row.check_out,
+                persons: row.persons,
+                earlyCheckin: !!row.early_checkin,
+                lateCheckout: !!row.late_checkout,
+                finalCleaning: !!row.final_cleaning,
+                dogFee: !!row.dog_fee,
+                dogCount: row.dog_count,
+                projektSpace: !!row.projekt_space,
+                projektSpaceCleaning: !!row.projekt_space_cleaning,
+                discountPercent: row.discount_percent,
+                total: row.total,
+                nights: row.nights,
+                status: row.status,
+                created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
+            });
+
+            const mapInquiryFromDb = (row) => ({
+                id: row.id,
+                name: row.name,
+                email: row.email,
+                phone: row.phone,
+                street: row.street,
+                houseNumber: row.house_number,
+                zip: row.zip,
+                city: row.city,
+                address: row.address,
+                wohnung: row.wohnung,
+                checkIn: row.check_in,
+                checkOut: row.check_out,
+                persons: row.persons,
+                earlyCheckin: !!row.early_checkin,
+                lateCheckout: !!row.late_checkout,
+                finalCleaning: !!row.final_cleaning,
+                dogFee: !!row.dog_fee,
+                dogCount: row.dog_count,
+                projektSpace: !!row.projekt_space,
+                projektSpaceCleaning: !!row.projekt_space_cleaning,
+                paymentMethod: row.payment_method,
+                total: row.total,
+                nights: row.nights,
+                status: row.status,
+                policyAcceptedAt: row.policy_accepted_at,
+                created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
+            });
+
+            const mapBookingFromDb = (row) => ({
+                id: row.id,
+                offerId: row.offer_id,
+                guest: {
+                    name: row.guest_name,
+                    email: row.guest_email,
+                    phone: row.guest_phone,
+                    address: row.guest_address,
+                },
+                wohnung: row.wohnung,
+                checkIn: row.check_in,
+                checkOut: row.check_out,
+                persons: row.persons,
+                earlyCheckin: !!row.early_checkin,
+                lateCheckout: !!row.late_checkout,
+                finalCleaning: !!row.final_cleaning,
+                dogFee: !!row.dog_fee,
+                dogCount: row.dog_count,
+                projektSpace: !!row.projekt_space,
+                total: row.total,
+                deposit: row.deposit,
+                downPayment: row.down_payment,
+                remaining: row.remaining,
+                depositPaid: !!row.deposit_paid,
+                downPaymentPaid: !!row.down_payment_paid,
+                remainingPaid: !!row.remaining_paid,
+                status: row.status,
+                created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
+            });
             const [guests, setGuests] = useState([]);
             const [offers, setOffers] = useState([]);
             const [bookings, setBookings] = useState([]);
@@ -858,67 +1010,75 @@
             };
 
             useEffect(() => {
-                const saved = localStorage.getItem('greenhouse_guests');
-                if (saved) setGuests(JSON.parse(saved));
-                const savedOffers = localStorage.getItem('greenhouse_offers');
-                if (savedOffers) setOffers(JSON.parse(savedOffers));
-                const savedBookings = localStorage.getItem('greenhouse_bookings');
-                if (savedBookings) setBookings(JSON.parse(savedBookings));
-                const savedInquiries = localStorage.getItem('greenhouse_inquiries');
-                if (savedInquiries) setInquiries(JSON.parse(savedInquiries));
-                const savedCancellation = localStorage.getItem('greenhouse_cancellation');
-                if (savedCancellation) setCancellationPolicy(savedCancellation);
-                const savedPrices = localStorage.getItem('greenhouse_prices');
-                if (savedPrices) {
+                // Gäste, Angebote, Anfragen, Buchungen und Einstellungen kommen jetzt
+                // aus der Datenbank statt aus localStorage.
+                (async () => {
                     try {
-                        const parsedPrices = JSON.parse(savedPrices);
-                        const migratedBasePersons = (parsedPrices.basePersons && typeof parsedPrices.basePersons === 'object')
-                            ? parsedPrices.basePersons
-                            : (typeof parsedPrices.basePersons === 'number'
-                                ? { wohnung1: parsedPrices.basePersons, wohnung2: parsedPrices.basePersons, both: parsedPrices.basePersons }
-                                : { wohnung1: 4, wohnung2: 4, both: 4 });
-                        const migratedFinalCleaning = (parsedPrices.finalCleaning && typeof parsedPrices.finalCleaning === 'object')
-                            ? parsedPrices.finalCleaning
-                            : (typeof parsedPrices.finalCleaning === 'number'
-                                ? { wohnung1: parsedPrices.finalCleaning, wohnung2: parsedPrices.finalCleaning, both: parsedPrices.finalCleaning }
-                                : { wohnung1: 60, wohnung2: 60, both: 60 });
-                        setPrices(prev => ({
-                            ...prev,
-                            ...parsedPrices,
-                            basePersons: migratedBasePersons,
-                            finalCleaning: migratedFinalCleaning,
-                            extraPersonPrices: (Array.isArray(parsedPrices.extraPersonPrices) && parsedPrices.extraPersonPrices.length > 0)
-                                ? parsedPrices.extraPersonPrices
-                                : prev.extraPersonPrices,
-                            extraServices: Array.isArray(parsedPrices.extraServices) ? parsedPrices.extraServices : [],
-                            projektSpaceCleaning: typeof parsedPrices.projektSpaceCleaning === 'number' ? parsedPrices.projektSpaceCleaning : 40,
-                        }));
-                    } catch (e) {
-                        console.warn('Konnte gespeicherte Preise nicht laden, benutze Standardwerte:', e);
+                        const [dbGuests, dbOffers, dbInquiries, dbBookings, dbSettings] = await Promise.all([
+                            apiFetch('/api/guests'),
+                            apiFetch('/api/offers'),
+                            apiFetch('/api/inquiries'),
+                            apiFetch('/api/bookings'),
+                            apiFetch('/api/settings'),
+                        ]);
+                        setGuests((dbGuests || []).map(mapGuestFromDb));
+                        setOffers((dbOffers || []).map(mapOfferFromDb));
+                        setInquiries((dbInquiries || []).map(mapInquiryFromDb));
+                        setBookings((dbBookings || []).map(mapBookingFromDb));
+
+                        if (dbSettings && dbSettings.cancellation_policy) {
+                            setCancellationPolicy(dbSettings.cancellation_policy);
+                        }
+                        if (dbSettings && typeof dbSettings.down_payment_percent === 'number') {
+                            setDownPaymentPercent(dbSettings.down_payment_percent);
+                        }
+                        if (dbSettings && dbSettings.prices) {
+                            const parsedPrices = dbSettings.prices;
+                            const migratedBasePersons = (parsedPrices.basePersons && typeof parsedPrices.basePersons === 'object')
+                                ? parsedPrices.basePersons
+                                : (typeof parsedPrices.basePersons === 'number'
+                                    ? { wohnung1: parsedPrices.basePersons, wohnung2: parsedPrices.basePersons, both: parsedPrices.basePersons }
+                                    : { wohnung1: 4, wohnung2: 4, both: 4 });
+                            const migratedFinalCleaning = (parsedPrices.finalCleaning && typeof parsedPrices.finalCleaning === 'object')
+                                ? parsedPrices.finalCleaning
+                                : (typeof parsedPrices.finalCleaning === 'number'
+                                    ? { wohnung1: parsedPrices.finalCleaning, wohnung2: parsedPrices.finalCleaning, both: parsedPrices.finalCleaning }
+                                    : { wohnung1: 60, wohnung2: 60, both: 60 });
+                            setPrices(prev => ({
+                                ...prev,
+                                ...parsedPrices,
+                                basePersons: migratedBasePersons,
+                                finalCleaning: migratedFinalCleaning,
+                                extraPersonPrices: (Array.isArray(parsedPrices.extraPersonPrices) && parsedPrices.extraPersonPrices.length > 0)
+                                    ? parsedPrices.extraPersonPrices
+                                    : prev.extraPersonPrices,
+                                extraServices: Array.isArray(parsedPrices.extraServices) ? parsedPrices.extraServices : [],
+                                projektSpaceCleaning: typeof parsedPrices.projektSpaceCleaning === 'number' ? parsedPrices.projektSpaceCleaning : 40,
+                            }));
+                        }
+                        if (dbSettings && dbSettings.company_info) {
+                            const parsedCompanyInfo = dbSettings.company_info;
+                            setCompanyInfo(prev => ({
+                                email: parsedCompanyInfo.email || prev.email,
+                                iban: parsedCompanyInfo.iban || prev.iban,
+                                bic: parsedCompanyInfo.bic || prev.bic,
+                                taxId: parsedCompanyInfo.taxId || prev.taxId,
+                                registerNr: parsedCompanyInfo.registerNr || prev.registerNr,
+                            }));
+                        }
+                        setSettingsLoaded(true);
+                    } catch (err) {
+                        setDataLoadError('Daten konnten nicht aus der Datenbank geladen werden: ' + err.message);
+                        setSettingsLoaded(true);
                     }
-                }
-                const savedCompanyInfo = localStorage.getItem('greenhouse_company');
-                if (savedCompanyInfo) {
-                    try {
-                        const parsedCompanyInfo = JSON.parse(savedCompanyInfo);
-                        setCompanyInfo(prev => ({
-                            email: parsedCompanyInfo.email || prev.email,
-                            iban: parsedCompanyInfo.iban || prev.iban,
-                            bic: parsedCompanyInfo.bic || prev.bic,
-                            taxId: parsedCompanyInfo.taxId || prev.taxId,
-                            registerNr: parsedCompanyInfo.registerNr || prev.registerNr,
-                        }));
-                    } catch (e) {
-                        console.warn('Konnte gespeicherte Firmendaten nicht laden, benutze Standardwerte:', e);
-                    }
-                }
-                const savedInvoices = localStorage.getItem('greenhouse_invoices');
-                if (savedInvoices) setInvoices(JSON.parse(savedInvoices));
+                })();
             }, []);
 
             useEffect(() => {
-                localStorage.setItem('greenhouse_company', JSON.stringify(companyInfo));
-            }, [companyInfo]);
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/company_info', { method: 'PUT', body: JSON.stringify(companyInfo) })
+                    .catch(err => console.warn('Firmendaten konnten nicht gespeichert werden:', err));
+            }, [companyInfo, settingsLoaded]);
 
             useEffect(() => {
                 if (activeTab === 'settings') {
@@ -927,42 +1087,49 @@
             }, [activeTab]);
 
             useEffect(() => {
-                localStorage.setItem('greenhouse_guests', JSON.stringify(guests));
-            }, [guests]);
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/cancellation_policy', { method: 'PUT', body: JSON.stringify(cancellationPolicy) })
+                    .catch(err => console.warn('Stornobedingungen konnten nicht gespeichert werden:', err));
+            }, [cancellationPolicy, settingsLoaded]);
 
             useEffect(() => {
-                localStorage.setItem('greenhouse_offers', JSON.stringify(offers));
-            }, [offers]);
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/prices', { method: 'PUT', body: JSON.stringify(prices) })
+                    .catch(err => console.warn('Preise konnten nicht gespeichert werden:', err));
+            }, [prices, settingsLoaded]);
 
             useEffect(() => {
-                localStorage.setItem('greenhouse_inquiries', JSON.stringify(inquiries));
-            }, [inquiries]);
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/down_payment_percent', { method: 'PUT', body: JSON.stringify(downPaymentPercent) })
+                    .catch(err => console.warn('Anzahlungs-Prozentsatz konnte nicht gespeichert werden:', err));
+            }, [downPaymentPercent, settingsLoaded]);
 
-            useEffect(() => {
-                localStorage.setItem('greenhouse_cancellation', cancellationPolicy);
-            }, [cancellationPolicy]);
-
-            useEffect(() => {
-                localStorage.setItem('greenhouse_prices', JSON.stringify(prices));
-            }, [prices]);
-
-            useEffect(() => {
-                localStorage.setItem('greenhouse_invoices', JSON.stringify(invoices));
-            }, [invoices]);
-
-            const addGuest = () => {
+            const addGuest = async () => {
                 if (guestForm.name && guestForm.email) {
                     const combinedAddress = (guestForm.street || guestForm.houseNumber || guestForm.zip || guestForm.city)
                         ? `${guestForm.street} ${guestForm.houseNumber}, ${guestForm.zip} ${guestForm.city}`
                         : '';
-                    if (editingGuestId) {
-                        setGuests(guests.map(g => g.id === editingGuestId ? { ...guestForm, address: combinedAddress, id: editingGuestId } : g));
-                        setEditingGuestId(null);
-                    } else {
-                        setGuests([...guests, { ...guestForm, address: combinedAddress, id: Date.now() }]);
+                    const payload = { ...guestForm, address: combinedAddress };
+                    try {
+                        if (editingGuestId) {
+                            const updated = await apiFetch(`/api/guests/${editingGuestId}`, {
+                                method: 'PUT',
+                                body: JSON.stringify(payload),
+                            });
+                            setGuests(guests.map(g => g.id === editingGuestId ? mapGuestFromDb(updated) : g));
+                            setEditingGuestId(null);
+                        } else {
+                            const created = await apiFetch('/api/guests', {
+                                method: 'POST',
+                                body: JSON.stringify(payload),
+                            });
+                            setGuests([...guests, mapGuestFromDb(created)]);
+                        }
+                        setGuestForm({ name: '', email: '', phone: '', street: '', houseNumber: '', zip: '', city: '', notes: '' });
+                        setShowGuestForm(false);
+                    } catch (err) {
+                        alert('Gast konnte nicht gespeichert werden: ' + err.message);
                     }
-                    setGuestForm({ name: '', email: '', phone: '', street: '', houseNumber: '', zip: '', city: '', notes: '' });
-                    setShowGuestForm(false);
                 }
             };
 
@@ -1075,20 +1242,26 @@
                 setChangingPassword(false);
             };
 
-            const addQuickGuestForOffer = () => {
+            const addQuickGuestForOffer = async () => {
                 if (!quickGuestForm.name || !quickGuestForm.email) return;
-                const newGuest = {
-                    id: Date.now(),
-                    name: quickGuestForm.name,
-                    email: quickGuestForm.email,
-                    phone: quickGuestForm.phone,
-                    street: '', houseNumber: '', zip: '', city: '', address: '',
-                    notes: '',
-                };
-                setGuests([...guests, newGuest]);
-                setOfferForm({ ...offerForm, guestId: newGuest.id });
-                setQuickGuestForm({ name: '', email: '', phone: '' });
-                setShowQuickGuest(false);
+                try {
+                    const created = await apiFetch('/api/guests', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            name: quickGuestForm.name,
+                            email: quickGuestForm.email,
+                            phone: quickGuestForm.phone,
+                            street: '', houseNumber: '', zip: '', city: '', address: '', notes: '',
+                        }),
+                    });
+                    const newGuest = mapGuestFromDb(created);
+                    setGuests([...guests, newGuest]);
+                    setOfferForm({ ...offerForm, guestId: newGuest.id });
+                    setQuickGuestForm({ name: '', email: '', phone: '' });
+                    setShowQuickGuest(false);
+                } catch (err) {
+                    alert('Gast konnte nicht angelegt werden: ' + err.message);
+                }
             };
 
             const startEditGuest = (guest) => {
@@ -1186,7 +1359,7 @@
                 return total;
             };
 
-            const createOffer = () => {
+            const createOffer = async () => {
                 if (!offerForm.checkIn || !offerForm.checkOut) return;
 
                 let guest;
@@ -1210,53 +1383,32 @@
 
                 const nights = calculateNights(offerForm.checkIn, offerForm.checkOut);
                 const total = calculateTotal(offerForm);
+                const isRealGuestId = guests.some(g => String(g.id) === String(offerForm.guestId));
 
-                if (editingOfferId) {
-                    const updatedOffer = {
-                        ...offers.find(o => o.id === editingOfferId),
-                        guestId: offerForm.guestId,
-                        guest: guest,
-                        ...offerForm,
-                        nights,
-                        total,
-                    };
-                    setOffers(offers.map(o => o.id === editingOfferId ? updatedOffer : o));
-                    setEditingOfferId(null);
-                    setOfferForm({
-                        guestId: '',
-                        wohnung: 'wohnung1',
-                        checkIn: '',
-                        checkOut: '',
-                        persons: 1,
-                        earlyCheckin: false,
-                        lateCheckout: false,
-                        finalCleaning: true,
-                        dogFee: false,
-                        dogCount: 1,
-                        projektSpace: false,
-                        projektSpaceCleaning: false,
-                        discountPercent: 0,
-                    });
-                    setShowOfferForm(false);
-                    setShowMailPreview(updatedOffer);
-                    return;
-                }
-
-                const offerId = `ANG-${new Date().getFullYear()}-${String(offers.length + 1).padStart(4, '0')}`;
-
-                const newOffer = {
-                    id: offerId,
-                    guestId: offerForm.guestId,
-                    guest: guest,
-                    ...offerForm,
-                    nights,
+                const payload = {
+                    guestId: isRealGuestId ? parseInt(offerForm.guestId) : null,
+                    sourceInquiryId: isRealGuestId ? null : offerForm.guestId,
+                    guestName: guest.name,
+                    guestEmail: guest.email,
+                    guestPhone: guest.phone || '',
+                    guestAddress: guest.address || '',
+                    wohnung: offerForm.wohnung,
+                    checkIn: offerForm.checkIn,
+                    checkOut: offerForm.checkOut,
+                    persons: offerForm.persons,
+                    earlyCheckin: offerForm.earlyCheckin,
+                    lateCheckout: offerForm.lateCheckout,
+                    finalCleaning: offerForm.finalCleaning,
+                    dogFee: offerForm.dogFee,
+                    dogCount: offerForm.dogCount,
+                    projektSpace: offerForm.projektSpace,
+                    projektSpaceCleaning: offerForm.projektSpaceCleaning,
+                    discountPercent: offerForm.discountPercent,
                     total,
-                    created: new Date().toLocaleDateString('de-DE'),
-                    status: 'sent',
+                    nights,
                 };
 
-                setOffers([...offers, newOffer]);
-                setOfferForm({
+                const resetForm = () => setOfferForm({
                     guestId: '',
                     wohnung: 'wohnung1',
                     checkIn: '',
@@ -1271,7 +1423,33 @@
                     projektSpaceCleaning: false,
                     discountPercent: 0,
                 });
-                setShowMailPreview(newOffer);
+
+                try {
+                    if (editingOfferId) {
+                        const updated = await apiFetch(`/api/offers/${editingOfferId}`, {
+                            method: 'PUT',
+                            body: JSON.stringify(payload),
+                        });
+                        const updatedOffer = mapOfferFromDb(updated);
+                        setOffers(offers.map(o => o.id === editingOfferId ? updatedOffer : o));
+                        setEditingOfferId(null);
+                        resetForm();
+                        setShowOfferForm(false);
+                        setShowMailPreview(updatedOffer);
+                    } else {
+                        const created = await apiFetch('/api/offers', {
+                            method: 'POST',
+                            body: JSON.stringify({ ...payload, status: 'sent' }),
+                        });
+                        const newOffer = mapOfferFromDb(created);
+                        setOffers([...offers, newOffer]);
+                        resetForm();
+                        setShowOfferForm(false);
+                        setShowMailPreview(newOffer);
+                    }
+                } catch (err) {
+                    alert('Angebot konnte nicht gespeichert werden: ' + err.message);
+                }
             };
 
             const makeBookingFromOffer = (offer) => {
@@ -1296,25 +1474,67 @@
                 };
             };
 
-            const convertToBooking = (offer) => {
-                const booking = makeBookingFromOffer(offer);
-                setBookings([...bookings, booking]);
-                setOffers(offers.map(o => o.id === offer.id ? { ...o, status: 'booked' } : o));
+            const convertToBooking = async (offer) => {
+                const localBooking = makeBookingFromOffer(offer);
+                try {
+                    const created = await apiFetch('/api/bookings', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            offerId: offer.id,
+                            guestName: localBooking.guest.name,
+                            guestEmail: localBooking.guest.email,
+                            guestPhone: localBooking.guest.phone,
+                            guestAddress: localBooking.guest.address,
+                            wohnung: localBooking.wohnung,
+                            checkIn: localBooking.checkIn,
+                            checkOut: localBooking.checkOut,
+                            persons: localBooking.persons,
+                            earlyCheckin: localBooking.earlyCheckin,
+                            lateCheckout: localBooking.lateCheckout,
+                            finalCleaning: localBooking.finalCleaning,
+                            dogFee: localBooking.dogFee,
+                            dogCount: localBooking.dogCount,
+                            projektSpace: localBooking.projektSpace,
+                            total: localBooking.total,
+                            deposit: localBooking.deposit,
+                            downPayment: localBooking.downPayment,
+                            remaining: localBooking.remaining,
+                            status: localBooking.status,
+                        }),
+                    });
+                    setBookings([...bookings, mapBookingFromDb(created)]);
+                    await apiFetch(`/api/offers/${offer.id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ status: 'booked' }),
+                    });
+                    setOffers(offers.map(o => o.id === offer.id ? { ...o, status: 'booked' } : o));
+                } catch (err) {
+                    alert('Die Buchung konnte nicht angelegt werden: ' + err.message);
+                }
             };
 
-            const markPaymentDone = (bookingId, paymentType) => {
-                setBookings(bookings.map(b => {
-                    if (b.id === bookingId) {
-                        if (paymentType === 'deposit') {
-                            return { ...b, depositPaid: true, status: 'awaiting_downpayment' };
-                        } else if (paymentType === 'downpayment') {
-                            return { ...b, downPaymentPaid: true, status: 'confirmed' };
-                        } else if (paymentType === 'remaining') {
-                            return { ...b, remainingPaid: true, status: 'completed' };
+            const markPaymentDone = async (bookingId, paymentType) => {
+                const statusMap = {
+                    deposit: { field: 'depositPaid', newStatus: 'awaiting_downpayment' },
+                    downpayment: { field: 'downPaymentPaid', newStatus: 'confirmed' },
+                    remaining: { field: 'remainingPaid', newStatus: 'completed' },
+                };
+                const mapping = statusMap[paymentType];
+                if (!mapping) return;
+                try {
+                    await apiFetch(`/api/bookings/${bookingId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ [mapping.field]: true, status: mapping.newStatus }),
+                    });
+                    setBookings(bookings.map(b => {
+                        if (b.id === bookingId) {
+                            return { ...b, [mapping.field]: true, status: mapping.newStatus };
                         }
-                    }
-                    return b;
-                }));
+                        return b;
+                    }));
+                } catch (err) {
+                    alert('Zahlungsstatus konnte nicht aktualisiert werden: ' + err.message);
+                }
             };
 
             const generateMailContent = (offer) => {
@@ -1721,12 +1941,22 @@ Deutschland`;
                 alert('✓ In Zwischenablage kopiert!');
             };
 
-            const deleteOffer = (id) => {
-                setOffers(offers.filter(o => o.id !== id));
+            const deleteOffer = async (id) => {
+                try {
+                    await apiFetch(`/api/offers/${id}`, { method: 'DELETE' });
+                    setOffers(offers.filter(o => o.id !== id));
+                } catch (err) {
+                    alert('Angebot konnte nicht gelöscht werden: ' + err.message);
+                }
             };
 
-            const deleteBooking = (id) => {
-                setBookings(bookings.filter(b => b.id !== id));
+            const deleteBooking = async (id) => {
+                try {
+                    await apiFetch(`/api/bookings/${id}`, { method: 'DELETE' });
+                    setBookings(bookings.filter(b => b.id !== id));
+                } catch (err) {
+                    alert('Buchung konnte nicht gelöscht werden: ' + err.message);
+                }
             };
             const wohnungLabel = (w) => w === 'wohnung1' ? 'Wohnung I' : w === 'wohnung2' ? 'Wohnung II' : 'Beide Wohnungen';
 
@@ -2020,55 +2250,67 @@ Deutschland`;
                 }
             };
 
-            const createInvoice = () => {
+            const createInvoice = async () => {
                 if (!invoiceForm.guestName || !invoiceForm.guestEmail || !invoiceForm.guestAddress || invoiceForm.items.length === 0) return;
                 const { rawNet, discount, discountAmount, net, vatRate, vatAmount, gross } = computeInvoiceAmounts(invoiceForm.items, invoiceForm.vatMode, invoiceForm.discountPercent);
 
-                if (editingInvoiceId) {
-                    const updatedInvoice = {
-                        ...invoices.find(i => i.id === editingInvoiceId),
-                        ...invoiceForm,
-                        rawNet,
-                        discount,
-                        discountAmount,
-                        net,
-                        vatRate,
-                        vatAmount,
-                        gross,
-                    };
-                    setInvoices(invoices.map(i => i.id === editingInvoiceId ? updatedInvoice : i));
-                    setEditingInvoiceId(null);
-                    setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
-                    setShowInvoiceForm(false);
-                    setShowInvoiceMailPreview(updatedInvoice);
-                    return;
-                }
-
-                const newInvoice = {
-                    id: nextInvoiceNumber(),
+                const payload = {
                     ...invoiceForm,
                     rawNet,
-                    discount,
                     discountAmount,
                     net,
                     vatRate,
                     vatAmount,
                     gross,
-                    created: new Date().toLocaleDateString('de-DE'),
-                    status: 'open',
                 };
-                setInvoices([...invoices, newInvoice]);
-                setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
-                setShowInvoiceForm(false);
-                setShowInvoiceMailPreview(newInvoice);
+
+                try {
+                    if (editingInvoiceId) {
+                        const updated = await apiFetch(`/api/invoices/${editingInvoiceId}`, {
+                            method: 'PUT',
+                            body: JSON.stringify(payload),
+                        });
+                        const updatedInvoice = mapInvoiceFromDb(updated);
+                        setInvoices(invoices.map(i => i.id === editingInvoiceId ? updatedInvoice : i));
+                        setEditingInvoiceId(null);
+                        setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
+                        setShowInvoiceForm(false);
+                        setShowInvoiceMailPreview(updatedInvoice);
+                    } else {
+                        const created = await apiFetch('/api/invoices', {
+                            method: 'POST',
+                            body: JSON.stringify(payload),
+                        });
+                        const newInvoice = mapInvoiceFromDb(created);
+                        setInvoices([...invoices, newInvoice]);
+                        setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
+                        setShowInvoiceForm(false);
+                        setShowInvoiceMailPreview(newInvoice);
+                    }
+                } catch (err) {
+                    alert('Rechnung konnte nicht gespeichert werden: ' + err.message);
+                }
             };
 
-            const deleteInvoice = (id) => {
-                setInvoices(invoices.filter(i => i.id !== id));
+            const deleteInvoice = async (id) => {
+                try {
+                    await apiFetch(`/api/invoices/${id}`, { method: 'DELETE' });
+                    setInvoices(invoices.filter(i => i.id !== id));
+                } catch (err) {
+                    alert('Rechnung konnte nicht gelöscht werden: ' + err.message);
+                }
             };
 
-            const markInvoicePaid = (id) => {
-                setInvoices(invoices.map(i => i.id === id ? { ...i, status: 'paid' } : i));
+            const markInvoicePaid = async (id) => {
+                try {
+                    await apiFetch(`/api/invoices/${id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ status: 'paid' }),
+                    });
+                    setInvoices(invoices.map(i => i.id === id ? { ...i, status: 'paid' } : i));
+                } catch (err) {
+                    alert('Status konnte nicht aktualisiert werden: ' + err.message);
+                }
             };
 
             const generateInvoiceMailContent = (invoice) => {
@@ -2458,20 +2700,15 @@ Deutschland
 
 
 
-            const acceptInquiry = (inquiry) => {
-                // Konvertiere Anfrage in Angebot
-                const offer = {
-                    id: `ANG-${new Date().getFullYear()}-${String(offers.length + 1).padStart(4, '0')}`,
-                    guestId: inquiry.id,
+            const acceptInquiry = async (inquiry) => {
+                const localOfferData = {
                     guest: {
                         id: inquiry.id,
                         name: inquiry.name,
                         email: inquiry.email,
                         phone: inquiry.phone,
                         address: inquiry.address || '',
-                        notes: `Payment Method: ${getPaymentMethodName(inquiry.paymentMethod)}`,
                     },
-                    policyAcceptedAt: inquiry.policyAcceptedAt || '',
                     wohnung: inquiry.wohnung,
                     checkIn: inquiry.checkIn,
                     checkOut: inquiry.checkOut,
@@ -2484,19 +2721,88 @@ Deutschland
                     projektSpace: inquiry.projektSpace,
                     nights: inquiry.nights,
                     total: inquiry.total,
-                    created: new Date().toLocaleDateString('de-DE'),
-                    status: 'booked',
                 };
 
-                const booking = makeBookingFromOffer(offer);
+                try {
+                    // 1. Angebot in der Datenbank anlegen (verknüpft mit der Anfrage, da der
+                    //    Gast noch nicht zwingend im Adressbuch steht)
+                    const createdOffer = await apiFetch('/api/offers', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            sourceInquiryId: inquiry.id,
+                            guestName: localOfferData.guest.name,
+                            guestEmail: localOfferData.guest.email,
+                            guestPhone: localOfferData.guest.phone,
+                            guestAddress: localOfferData.guest.address,
+                            wohnung: localOfferData.wohnung,
+                            checkIn: localOfferData.checkIn,
+                            checkOut: localOfferData.checkOut,
+                            persons: localOfferData.persons,
+                            earlyCheckin: localOfferData.earlyCheckin,
+                            lateCheckout: localOfferData.lateCheckout,
+                            finalCleaning: localOfferData.finalCleaning,
+                            dogFee: localOfferData.dogFee,
+                            dogCount: localOfferData.dogCount,
+                            projektSpace: localOfferData.projektSpace,
+                            total: localOfferData.total,
+                            nights: localOfferData.nights,
+                            status: 'booked',
+                        }),
+                    });
+                    const offer = mapOfferFromDb(createdOffer);
+                    const localBooking = makeBookingFromOffer(offer);
 
-                setOffers([...offers, offer]);
-                setBookings([...bookings, booking]);
-                setInquiries(inquiries.map(inq => inq.id === inquiry.id ? { ...inq, status: 'accepted' } : inq));
+                    // 2. Buchung anlegen, verknüpft mit dem soeben erstellten Angebot
+                    const createdBooking = await apiFetch('/api/bookings', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            offerId: offer.id,
+                            guestName: localBooking.guest.name,
+                            guestEmail: localBooking.guest.email,
+                            guestPhone: localBooking.guest.phone,
+                            guestAddress: localBooking.guest.address,
+                            wohnung: localBooking.wohnung,
+                            checkIn: localBooking.checkIn,
+                            checkOut: localBooking.checkOut,
+                            persons: localBooking.persons,
+                            earlyCheckin: localBooking.earlyCheckin,
+                            lateCheckout: localBooking.lateCheckout,
+                            finalCleaning: localBooking.finalCleaning,
+                            dogFee: localBooking.dogFee,
+                            dogCount: localBooking.dogCount,
+                            projektSpace: localBooking.projektSpace,
+                            total: localBooking.total,
+                            deposit: localBooking.deposit,
+                            downPayment: localBooking.downPayment,
+                            remaining: localBooking.remaining,
+                            status: localBooking.status,
+                        }),
+                    });
+
+                    // 3. Anfrage als "angenommen" markieren
+                    await apiFetch(`/api/inquiries/${inquiry.id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ status: 'accepted' }),
+                    });
+
+                    setOffers([...offers, offer]);
+                    setBookings([...bookings, mapBookingFromDb(createdBooking)]);
+                    setInquiries(inquiries.map(inq => inq.id === inquiry.id ? { ...inq, status: 'accepted' } : inq));
+                } catch (err) {
+                    alert('Die Anfrage konnte nicht bestätigt werden: ' + err.message);
+                }
             };
 
-            const rejectInquiry = (id) => {
-                setInquiries(inquiries.map(inq => inq.id === id ? { ...inq, status: 'rejected' } : inq));
+            const rejectInquiry = async (id) => {
+                try {
+                    await apiFetch(`/api/inquiries/${id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ status: 'rejected' }),
+                    });
+                    setInquiries(inquiries.map(inq => inq.id === id ? { ...inq, status: 'rejected' } : inq));
+                } catch (err) {
+                    alert('Die Anfrage konnte nicht abgelehnt werden: ' + err.message);
+                }
             };
 
             const [editingInquiryId, setEditingInquiryId] = useState(null);
@@ -2515,15 +2821,23 @@ Deutschland
                 setEditingInquiryId(inquiry.id);
             };
 
-            const saveInquiryEdit = () => {
+            const saveInquiryEdit = async () => {
                 const combinedAddress = (inquiryEditForm.street || inquiryEditForm.houseNumber || inquiryEditForm.zip || inquiryEditForm.city)
                     ? `${inquiryEditForm.street} ${inquiryEditForm.houseNumber}, ${inquiryEditForm.zip} ${inquiryEditForm.city}`
                     : '';
-                setInquiries(inquiries.map(inq => inq.id === editingInquiryId
-                    ? { ...inq, ...inquiryEditForm, address: combinedAddress }
-                    : inq
-                ));
-                setEditingInquiryId(null);
+                try {
+                    await apiFetch(`/api/inquiries/${editingInquiryId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ ...inquiryEditForm, address: combinedAddress }),
+                    });
+                    setInquiries(inquiries.map(inq => inq.id === editingInquiryId
+                        ? { ...inq, ...inquiryEditForm, address: combinedAddress }
+                        : inq
+                    ));
+                    setEditingInquiryId(null);
+                } catch (err) {
+                    alert('Änderungen konnten nicht gespeichert werden: ' + err.message);
+                }
             };
 
             const getPaymentMethodName = (method) => {
@@ -2536,8 +2850,13 @@ Deutschland
                 return methods[method] || method;
             };
 
-            const deleteGuest = (id) => {
-                setGuests(guests.filter(g => g.id !== id));
+            const deleteGuest = async (id) => {
+                try {
+                    await apiFetch(`/api/guests/${id}`, { method: 'DELETE' });
+                    setGuests(guests.filter(g => g.id !== id));
+                } catch (err) {
+                    alert('Gast konnte nicht gelöscht werden: ' + err.message);
+                }
             };
 
             const totalOffers = offers.length;
@@ -2674,6 +2993,9 @@ Deutschland
                     {/* ANFRAGEN */}
                     {activeTab === 'inquiries' && (
                         <div>
+                            {dataLoadError && (
+                                <div className="error-message" style={{ marginBottom: '16px' }}>⚠ {dataLoadError}</div>
+                            )}
                             {inquiries.length === 0 && <p style={{ color: 'var(--licht-70)', textAlign: 'center', padding: '40px 0' }}>Noch keine Anfragen</p>}
                             {inquiries.slice().reverse().map(inquiry => (
                                 <div key={inquiry.id} className="item-card">
