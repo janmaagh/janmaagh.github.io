@@ -4,6 +4,14 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 
+<!--
+  ═══════════════════════════════════════════════════════════════
+  HAUPT-WEBSITE — öffentliche Marketing-/Info-Seite
+  Wird deployt unter: greenhouse-fuerstenberg.de (Hauptverzeichnis)
+  Kein Login, für jeden erreichbar.
+  ═══════════════════════════════════════════════════════════════
+-->
+
 <!-- ══ PRIMARY SEO ══ -->
 <title>Greenhouse Fürstenberg/Havel – Ferienhaus für Gruppen & Retreats | 1h Berlin</title>
 <meta name="description" content="Zwei Altbauwohnungen für 16+ Gäste in Fürstenberg/Havel. Ideal für Gruppenreisen, Kreativ-Retreats & Firmenklausuren – mit Kunstatelier, Yoga-Raum & Makerspace. Direkt an Havel & Seen, 1 Stunde von Berlin (RE5)."/>
@@ -608,6 +616,16 @@ footer{
   content:'';position:absolute;inset:2px;
   background:var(--accent, rgba(180,70,55,.25));
 }
+.kal-tag.belegt.halb-an::after{
+  background:linear-gradient(135deg, transparent 50%, var(--accent, rgba(180,70,55,.35)) 50%);
+}
+.kal-tag.frei.halb-ab{
+  color:var(--licht-70);
+}
+.kal-tag.frei.halb-ab::after{
+  content:'';position:absolute;inset:2px;
+  background:linear-gradient(135deg, var(--accent, rgba(180,70,55,.28)) 50%, transparent 50%);
+}
 .kal-tag.frei{
   color:var(--licht-70);
 }
@@ -951,7 +969,7 @@ footer{
     <h1 class="hero-h1">Greenhouse<br><em>Fürstenberg</em><br>an der Havel</h1>
     <div class="strich"></div>
     <p>Zwei gründerzeitliche Altbauwohnungen für Gruppen, Retreats und kreative Köpfe —<br>1 Stunde von Berlin, umgeben von Seen und Wald. Ferienhaus für bis zu 16+ Personen in Brandenburg.</p>
-    <a class="plink" style="animation:auf .9s 1s both" href="#kontakt">
+    <a class="plink" style="animation:auf .9s 1s both" href="/buchen">
       Jetzt buchen
       <svg width="13" height="10" viewBox="0 0 13 10" fill="none"><path d="M7.5 1l4 4-4 4M1 5h10.5" stroke="currentColor" stroke-width="1"/></svg>
     </a>
@@ -997,7 +1015,7 @@ footer{
       <p class="etikett">Schlafen &amp; Wohnen</p>
       <h2 class="titel">5 Zimmer,<br><em>zwei Welten</em></h2>
     </div>
-    <a class="plink" href="#kontakt">
+    <a class="plink" href="/buchen">
       Verfügbarkeit &amp; Buchen
       <svg width="13" height="10" viewBox="0 0 13 10" fill="none"><path d="M7.5 1l4 4-4 4M1 5h10.5" stroke="currentColor" stroke-width="1"/></svg>
     </a>
@@ -1295,6 +1313,12 @@ footer{
 
   </div><!-- .kal-drei -->
 
+  <div style="display:flex;gap:1.5rem;flex-wrap:wrap;justify-content:center;margin:1rem 0;font-size:.7rem;letter-spacing:.06em;color:var(--licht-40)">
+    <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;background:rgba(160,60,50,.35);display:inline-block"></span>Belegt</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;background:linear-gradient(135deg, transparent 50%, rgba(160,60,50,.4) 50%);display:inline-block"></span>An-/Abreisetag (halbtags buchbar)</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;border:1px solid rgba(255,255,255,.15);display:inline-block"></span>Frei</div>
+  </div>
+
   <div class="kal-hinweis">
     Belegungen werden direkt von Airbnb synchronisiert. Bei Fragen zu Verfügbarkeiten oder Sonderkonditionen für Gruppen:
     <a href="#kontakt">Gastgeber kontaktieren</a>
@@ -1419,13 +1443,28 @@ footer{
         var isPast = dStr < todayStr;
         var isToday= dStr === todayStr;
         var isBel  = bookedSet.has(dStr);
+
+        // Vor-/Folgetag ermitteln (Date-Objekt normalisiert Monatswechsel automatisch)
+        var prevD = new Date(vy, vm, d - 1);
+        var nextD = new Date(vy, vm, d + 1);
+        var prevStr = ds(prevD.getFullYear(), prevD.getMonth(), prevD.getDate());
+        var nextStr = ds(nextD.getFullYear(), nextD.getMonth(), nextD.getDate());
+        var prevBel = bookedSet.has(prevStr);
+        var nextBel = bookedSet.has(nextStr);
+
+        // Anreisetag: erster belegter Tag einer Buchung (Zimmer wird erst abends bezogen —
+        // rein rechnerisch könnte an diesem Tag noch jemand anders abreisen).
+        var isArrival = isBel && !prevBel;
+        // Abreisetag: erster freier Tag direkt nach einer Buchung (Zimmer wird morgens frei).
+        var isDeparture = !isBel && prevBel;
+
         var cls = 'kal-tag';
         if      (isToday) cls += ' heute';
-        else if (isBel)   cls += ' belegt';
-        else if (!isPast) cls += ' frei';
+        else if (isBel)   cls += (' belegt' + (isArrival ? ' halb-an' : ''));
+        else if (!isPast) cls += (' frei' + (isDeparture ? ' halb-ab' : ''));
         if (isPast && !isToday) cls += ' past';
         el.className = cls;
-        if (isBel && !isPast) el.style.setProperty('--accent', accentColor);
+        if ((isBel || isDeparture) && !isPast) el.style.setProperty('--accent', accentColor);
         var nr = document.createElement('div');
         nr.className = 'kal-tag-nr';
         nr.textContent = d;
@@ -1485,7 +1524,7 @@ footer{
   <h2 class="titel" style="max-width:500px;margin:0 auto var(--s5)">Euer Retreat<br><em>wartet</em></h2>
   <p class="fliess" style="max-width:400px;margin:0 auto var(--s5);color:var(--licht-70)">Ob Familienauszeit, Kreativworkshop oder Firmenklausur — das Greenhouse bietet den Rahmen für gemeinsame Zeit, die bleibt.</p>
   <div class="bbtns">
-    <a class="bh" href="/buchen">Anfrage senden →</a>
+    <a class="bh" href="/buchen">Buchen →</a>
     <a class="bn" href="#kontakt">Gastgeber kontaktieren</a>
   </div>
 </section>
@@ -1605,6 +1644,29 @@ function ghSendMail() {
 
   status.textContent = 'Wird gesendet …';
   status.style.color = 'rgba(200,164,58,.9)';
+
+  // Falls Zeitraum + Einheit ausgewählt wurden: zusätzlich als echte Anfrage
+  // in der Buchungsdatenbank anlegen (taucht dann im Booking-Tool unter
+  // "Anfragen" auf). Bei einer reinen allgemeinen Frage ohne Datum/Einheit
+  // wird das übersprungen — dafür fehlen dann zwingende Angaben.
+  var dpState = window.dpGetState ? window.dpGetState() : null;
+  if (dpState && dpState.wohnung && dpState.checkIn && dpState.checkOut) {
+    fetch('https://greenhouse-fuerstenberg.de/api/inquiries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name,
+        email: email,
+        wohnung: dpState.wohnung,
+        checkIn: dpState.checkIn,
+        checkOut: dpState.checkOut,
+        persons: gaeste ? parseInt(gaeste, 10) : 1,
+        paymentMethod: 'bank_transfer',
+      }),
+    }).catch(function(err) {
+      console.warn('Anfrage konnte nicht an die Datenbank gesendet werden (kommt trotzdem per E-Mail an):', err);
+    });
+  }
 
   var formData = new FormData();
   formData.append('form-name', 'anfrage');
@@ -1741,9 +1803,9 @@ function ghSendMail() {
 
     <h3 style="font-family:'Cormorant Garamond',serif;font-size:1rem;font-weight:600;letter-spacing:.08em;color:var(--licht);margin:var(--s3) 0 var(--s1)">3. Buchungsanfragen</h3>
     <p style="font-size:.85rem;line-height:1.7;margin:0">
-      Wenn Sie über unser Anfrageformular eine Buchungsanfrage stellen, erheben und verarbeiten wir die von Ihnen angegebenen Daten (Name, E-Mail-Adresse, Telefonnummer, Adresse, gewünschter Zeitraum, Wohnungswahl, Personenanzahl sowie ggf. Zusatzwünsche). Die Verarbeitung erfolgt zur Bearbeitung Ihrer Anfrage und zur Anbahnung bzw. Erfüllung eines Beherbergungsvertrags (Art. 6 Abs. 1 lit. b DSGVO).<br><br>
-      Ihre Anfrage wird zum einen per E-Mail über den Dienstleister Formspree an uns weitergeleitet, zum anderen in unserer Buchungsdatenbank gespeichert, die auf der Cloudflare-Infrastruktur betrieben wird. Mit beiden Dienstleistern bestehen entsprechende Auftragsverarbeitungsverträge gemäß Art. 28 DSGVO.<br><br>
-      Die Angabe einer vollständigen Adresse ist erforderlich, da diese eine gesetzliche Pflichtangabe auf Rechnungen ist (§ 14 Abs. 4 UStG).
+      Auf unserer Website gibt es zwei Wege, um Kontakt bezüglich einer Buchung aufzunehmen: das Kontaktformular auf der Startseite und das ausführliche Anfrageformular unter /buchen. In beiden Fällen erheben und verarbeiten wir die von Ihnen angegebenen Daten (z. B. Name, E-Mail-Adresse, Telefonnummer, Adresse, gewünschter Zeitraum, Wohnungswahl, Personenanzahl, ggf. Nachricht oder Zusatzwünsche). Die Verarbeitung erfolgt zur Bearbeitung Ihrer Anfrage und zur Anbahnung bzw. Erfüllung eines Beherbergungsvertrags (Art. 6 Abs. 1 lit. b DSGVO).<br><br>
+      Ihre Anfrage wird per E-Mail über den Dienstleister Formspree an uns weitergeleitet. Sofern Sie im Kontaktformular oder im Anfrageformular einen konkreten Zeitraum und eine Wohnung auswählen, wird diese Anfrage zusätzlich in unserer Buchungsdatenbank gespeichert, die auf der Cloudflare-Infrastruktur betrieben wird. Mit beiden Dienstleistern bestehen entsprechende Auftragsverarbeitungsverträge gemäß Art. 28 DSGVO.<br><br>
+      Die Angabe einer vollständigen Adresse (im Anfrageformular unter /buchen) ist erforderlich, da diese eine gesetzliche Pflichtangabe auf Rechnungen ist (§ 14 Abs. 4 UStG).
     </p>
 
     <h3 style="font-family:'Cormorant Garamond',serif;font-size:1rem;font-weight:600;letter-spacing:.08em;color:var(--licht);margin:var(--s3) 0 var(--s1)">4. Buchungsverwaltung und Rechnungsstellung</h3>
@@ -1938,6 +2000,15 @@ window.addEventListener('scroll',()=>nav.classList.toggle('on',scrollY>80),{pass
     }
     updateField();
     render();
+  };
+
+  window.dpGetState = function(){
+    var unitKeys = ['wohnung1', 'wohnung2', 'both'];
+    return {
+      wohnung: dpUnit >= 0 ? unitKeys[dpUnit] : null,
+      checkIn: dpStart ? toStr(dpStart) : null,
+      checkOut: dpEnd ? toStr(dpEnd) : null,
+    };
   };
 
   function isBooked(dateStr){
