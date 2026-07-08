@@ -689,6 +689,10 @@
             const [passwordChangeMessage, setPasswordChangeMessage] = useState({ type: '', text: '' });
             const [changingPassword, setChangingPassword] = useState(false);
             const [showNewPassword, setShowNewPassword] = useState(false);
+            const [serverBackups, setServerBackups] = useState([]);
+            const [loadingBackups, setLoadingBackups] = useState(false);
+            const [backupMessage, setBackupMessage] = useState('');
+            const [lastManualBackup, setLastManualBackup] = useState(() => localStorage.getItem('greenhouse_last_backup_date') || null);
             const [quickGuestForm, setQuickGuestForm] = useState({ name: '', email: '', phone: '' });
             const [offerForm, setOfferForm] = useState({
                 guestId: '',
@@ -917,6 +921,12 @@
             }, [companyInfo]);
 
             useEffect(() => {
+                if (activeTab === 'settings') {
+                    loadServerBackups();
+                }
+            }, [activeTab]);
+
+            useEffect(() => {
                 localStorage.setItem('greenhouse_guests', JSON.stringify(guests));
             }, [guests]);
 
@@ -954,6 +964,78 @@
                     setGuestForm({ name: '', email: '', phone: '', street: '', houseNumber: '', zip: '', city: '', notes: '' });
                     setShowGuestForm(false);
                 }
+            };
+
+            const downloadBackupNow = async () => {
+                setBackupMessage('Erstelle Backup …');
+                try {
+                    const res = await fetch(`${API_BASE}/api/backup`, {
+                        headers: { 'Authorization': `Bearer ${authToken}` },
+                    });
+                    if (!res.ok) {
+                        setBackupMessage(`Fehler beim Erstellen des Backups (Status ${res.status})`);
+                        return;
+                    }
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `greenhouse-backup-${new Date().toISOString().split('T')[0]}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(() => URL.revokeObjectURL(url), 5000);
+                    const today = new Date().toISOString().split('T')[0];
+                    localStorage.setItem('greenhouse_last_backup_date', today);
+                    setLastManualBackup(today);
+                    setBackupMessage('✓ Backup heruntergeladen.');
+                } catch (err) {
+                    setBackupMessage('Fehler: ' + err.message);
+                }
+            };
+
+            const loadServerBackups = async () => {
+                setLoadingBackups(true);
+                try {
+                    const res = await fetch(`${API_BASE}/api/backups`, {
+                        headers: { 'Authorization': `Bearer ${authToken}` },
+                    });
+                    if (res.ok) {
+                        setServerBackups(await res.json());
+                    }
+                } catch (err) {
+                    // still, keep silent - list stays empty
+                }
+                setLoadingBackups(false);
+            };
+
+            const downloadServerBackup = async (id, createdAt) => {
+                try {
+                    const res = await fetch(`${API_BASE}/api/backups/${id}`, {
+                        headers: { 'Authorization': `Bearer ${authToken}` },
+                    });
+                    if (!res.ok) {
+                        alert(`Fehler beim Laden des Backups (Status ${res.status})`);
+                        return;
+                    }
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `greenhouse-backup-${(createdAt || '').split(' ')[0]}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(() => URL.revokeObjectURL(url), 5000);
+                } catch (err) {
+                    alert('Fehler: ' + err.message);
+                }
+            };
+
+            const daysSinceLastBackup = () => {
+                if (!lastManualBackup) return null;
+                const diff = Math.floor((Date.now() - new Date(lastManualBackup).getTime()) / (1000 * 60 * 60 * 24));
+                return diff;
             };
 
             const changePassword = async () => {
@@ -3626,6 +3708,48 @@ Deutschland
                                 <button onClick={changePassword} disabled={changingPassword || !newPassword || !confirmPassword}>
                                     {changingPassword ? 'Ändere …' : 'Passwort ändern'}
                                 </button>
+                            </div>
+
+                            <div className="card">
+                                <h3>💾 Datensicherung</h3>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
+                                    Alle Daten (Gäste, Anfragen, Angebote, Buchungen, Rechnungen, Einstellungen) liegen in der Cloudflare-Datenbank.
+                                    Zusätzlich läuft jede Woche automatisch eine Server-Sicherung — hier kannst du jederzeit auch selbst eine
+                                    Kopie herunterladen, z. B. um sie sicher auf deinem eigenen Rechner abzulegen.
+                                </p>
+
+                                {daysSinceLastBackup() === null && (
+                                    <div style={{ color: '#e0a05a', fontSize: '13px', marginBottom: '12px' }}>
+                                        ⚠ Du hast noch nie ein manuelles Backup heruntergeladen.
+                                    </div>
+                                )}
+                                {daysSinceLastBackup() !== null && daysSinceLastBackup() > 14 && (
+                                    <div style={{ color: '#e0a05a', fontSize: '13px', marginBottom: '12px' }}>
+                                        ⚠ Dein letztes manuelles Backup ist {daysSinceLastBackup()} Tage her — vielleicht mal wieder Zeit dafür?
+                                    </div>
+                                )}
+                                {daysSinceLastBackup() !== null && daysSinceLastBackup() <= 14 && (
+                                    <div style={{ color: 'var(--licht-70)', fontSize: '13px', marginBottom: '12px' }}>
+                                        Letztes manuelles Backup: vor {daysSinceLastBackup()} {daysSinceLastBackup() === 1 ? 'Tag' : 'Tagen'}
+                                    </div>
+                                )}
+
+                                <button onClick={downloadBackupNow}>📥 Backup jetzt herunterladen</button>
+                                {backupMessage && <div style={{ fontSize: '13px', color: 'var(--licht-70)', marginTop: '8px' }}>{backupMessage}</div>}
+
+                                <h4 style={{ marginTop: '24px', marginBottom: '12px' }}>Automatische Server-Backups (letzte Wochen)</h4>
+                                {loadingBackups && <p style={{ fontSize: '13px', color: 'var(--licht-70)' }}>Lade …</p>}
+                                {!loadingBackups && serverBackups.length === 0 && (
+                                    <p style={{ fontSize: '13px', color: 'var(--licht-70)' }}>Noch keine automatischen Backups vorhanden — die ersten entstehen mit dem nächsten wöchentlichen Lauf.</p>
+                                )}
+                                {!loadingBackups && serverBackups.map(b => (
+                                    <div key={b.id} className="item-card" style={{ padding: '10px 14px', marginBottom: '8px' }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <span style={{ fontSize: '13px' }}>{new Date(b.created_at).toLocaleString('de-DE')}</span>
+                                            <button className="secondary" onClick={() => downloadServerBackup(b.id, b.created_at)}>📥 Herunterladen</button>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
 
                             <div className="card">
