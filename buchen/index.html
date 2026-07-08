@@ -4,7 +4,14 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/png" href="logo-png-optimized.png">
-    <title>Greenhouse – Buchung</title>
+    <title>Greenhouse – Gäste-Anfrage (öffentlich · /buchen)</title>
+    <!--
+      ═══════════════════════════════════════════════════════════════
+      GÄSTE-TOOL — öffentliches Anfrageformular für Gäste
+      Wird deployt unter: greenhouse-fuerstenberg.de/buchen
+      Kein Login, für jeden erreichbar.
+      ═══════════════════════════════════════════════════════════════
+    -->
     <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Jost:wght@400;500;600&display=swap" rel="stylesheet">
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -410,6 +417,8 @@
 - Kaution: ${deposit}€ (wird nach Checkout zurückerstattet, sofern keine Schäden vorliegen)`;
 
         function BookingForm() {
+            const ICAL_PROXY_BASE = 'https://greenhouse-fuerstenberg.de/ical?url=';
+            const API_BASE = 'https://greenhouse-fuerstenberg.de';
             const [formData, setFormData] = useState({
                 name: '',
                 email: '',
@@ -447,6 +456,7 @@
                 deposit: 100,
                 extraServices: [],
             });
+            const [liveCancellationPolicy, setLiveCancellationPolicy] = useState(null);
 
             const [bookings, setBookings] = useState([]);
             const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -465,6 +475,42 @@
                         console.log('Could not load bookings');
                     }
                 }
+
+                // Preise, Stornobedingungen und Anzahlungs-% kommen jetzt live aus der
+                // Datenbank (öffentlicher, nicht-passwortgeschützter Endpunkt) statt aus
+                // dem längst veralteten lokalen Speicher.
+                fetch(`${API_BASE}/api/public-settings`)
+                    .then(res => res.ok ? res.json() : null)
+                    .then(data => {
+                        if (!data) return;
+                        if (data.prices) {
+                            const parsedPrices = data.prices;
+                            const migratedBasePersons = (parsedPrices.basePersons && typeof parsedPrices.basePersons === 'object')
+                                ? parsedPrices.basePersons
+                                : (typeof parsedPrices.basePersons === 'number'
+                                    ? { wohnung1: parsedPrices.basePersons, wohnung2: parsedPrices.basePersons, both: parsedPrices.basePersons }
+                                    : { wohnung1: 4, wohnung2: 4, both: 4 });
+                            const migratedFinalCleaning = (parsedPrices.finalCleaning && typeof parsedPrices.finalCleaning === 'object')
+                                ? parsedPrices.finalCleaning
+                                : (typeof parsedPrices.finalCleaning === 'number'
+                                    ? { wohnung1: parsedPrices.finalCleaning, wohnung2: parsedPrices.finalCleaning, both: parsedPrices.finalCleaning }
+                                    : { wohnung1: 60, wohnung2: 60, both: 60 });
+                            setPrices(prev => ({
+                                ...prev,
+                                ...parsedPrices,
+                                basePersons: migratedBasePersons,
+                                finalCleaning: migratedFinalCleaning,
+                                extraPersonPrices: (Array.isArray(parsedPrices.extraPersonPrices) && parsedPrices.extraPersonPrices.length > 0)
+                                    ? parsedPrices.extraPersonPrices
+                                    : prev.extraPersonPrices,
+                                projektSpaceCleaning: typeof parsedPrices.projektSpaceCleaning === 'number' ? parsedPrices.projektSpaceCleaning : 40,
+                            }));
+                        }
+                        if (data.cancellationPolicy) {
+                            setLiveCancellationPolicy(data.cancellationPolicy);
+                        }
+                    })
+                    .catch(err => console.warn('Preise/Stornobedingungen konnten nicht live geladen werden, benutze Standardwerte:', err));
 
                 const savedPrices = localStorage.getItem('greenhouse_prices');
                 if (savedPrices) {
@@ -498,8 +544,7 @@
 
             // Airbnb-Belegung live synchronisieren (über den Cloudflare-Proxy /ical der Website)
             useEffect(() => {
-                const ICAL_PROXY_BASE = 'https://greenhouse-fuerstenberg.de/ical?url=';
-                const API_BASE = 'https://greenhouse-fuerstenberg.de';
+
                 const ICAL_MAP = {
                     wohnung1: 'https://www.airbnb.de/calendar/ical/50569643.ics?t=55654c77686d4a008d0b3e157bc9fc5e',
                     wohnung2: 'https://www.airbnb.de/calendar/ical/1638991508992594489.ics?t=77ed71be4f204892ab116d8ac12bc2c1',
@@ -1085,7 +1130,7 @@
                                 padding: '10px 12px',
                                 marginBottom: '12px'
                             }}>
-                                {getStornoText(prices.deposit || 100)}
+                                {liveCancellationPolicy || getStornoText(prices.deposit || 100)}
                             </div>
                             <div className="checkbox-group">
                                 <input type="checkbox" id="policyAccepted" checked={formData.policyAccepted} onChange={(e) => setFormData({ ...formData, policyAccepted: e.target.checked })} />
