@@ -2,10 +2,6 @@
 // Greenhouse Market — Backend-Worker
 // Liefert die statische Website aus UND stellt die API für das Booking-System
 // bereit (Gäste, Anfragen, Angebote, Buchungen, Rechnungen, Einstellungen).
-//
-// WICHTIG: Dies ist der Startpunkt der Datenbank-Anbindung. Die React-Tools
-// (Greenhouse___Booking.html, Greenhouse___Buchung.html) müssen im nächsten
-// Schritt noch umgebaut werden, damit sie diese API statt localStorage nutzen.
 // ============================================================================
 
 function jsonResponse(data, status = 200) {
@@ -22,14 +18,30 @@ function errorResponse(message, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
-function checkAuth(request, env) {
-  const authHeader = request.headers.get('Authorization') || '';
-  const token = authHeader.replace('Bearer ', '');
-  return token && env.ADMIN_TOKEN && token === env.ADMIN_TOKEN;
+async function hashPassword(password) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function requireAuth(request, env) {
-  if (!checkAuth(request, env)) {
+async function checkAuth(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  const token = authHeader.replace('Bearer ', '');
+  if (!token) return false;
+
+  const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'admin_password_hash'`).first();
+  if (row) {
+    const storedHash = JSON.parse(row.value_json);
+    const incomingHash = await hashPassword(token);
+    return incomingHash === storedHash;
+  }
+
+  return !!(env.ADMIN_TOKEN && token === env.ADMIN_TOKEN);
+}
+
+async function requireAuth(request, env) {
+  if (!(await checkAuth(request, env))) {
     return errorResponse('Nicht autorisiert. Bitte gültigen Admin-Token im Header "Authorization: Bearer <token>" mitschicken.', 401);
   }
   return null;
@@ -110,7 +122,7 @@ const INQUIRY_FIELDS = {
 
 async function handleInquiries(request, env, method, id) {
   if (method === 'GET') {
-    const authFail = requireAuth(request, env);
+    const authFail = await requireAuth(request, env);
     if (authFail) return authFail;
     return jsonResponse(await listRows(env, 'inquiries'));
   }
@@ -142,7 +154,7 @@ async function handleInquiries(request, env, method, id) {
     return jsonResponse(created, 201);
   }
 
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
 
   if (method === 'PUT' && id) {
@@ -168,7 +180,7 @@ async function handleInquiries(request, env, method, id) {
 }
 
 async function handleBookings(request, env, method, id) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
 
   if (method === 'GET') return jsonResponse(await listRows(env, 'bookings'));
@@ -219,7 +231,7 @@ async function handleBookings(request, env, method, id) {
 }
 
 async function handleOffers(request, env, method, id) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
 
   if (method === 'GET') return jsonResponse(await listRows(env, 'offers'));
@@ -259,7 +271,7 @@ async function handleOffers(request, env, method, id) {
 }
 
 async function handleInvoices(request, env, method, id) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
 
   if (method === 'GET') {
@@ -303,7 +315,7 @@ async function handleInvoices(request, env, method, id) {
 }
 
 async function handleSettings(request, env, method, key) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
 
   if (method === 'GET') {
@@ -323,6 +335,25 @@ async function handleSettings(request, env, method, key) {
   }
 
   return errorResponse('Methode nicht unterstützt', 405);
+}
+
+async function handleChangePassword(request, env) {
+  const authFail = await requireAuth(request, env);
+  if (authFail) return authFail;
+
+  const body = await request.json();
+  const newPassword = (body.newPassword || '').trim();
+  if (newPassword.length < 8) {
+    return errorResponse('Das neue Passwort muss mindestens 8 Zeichen lang sein.', 400);
+  }
+
+  const hash = await hashPassword(newPassword);
+  await env.DB.prepare(
+    `INSERT INTO settings (key, value_json, updated_at) VALUES ('admin_password_hash', ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')`
+  ).bind(JSON.stringify(hash)).run();
+
+  return jsonResponse({ changed: true });
 }
 
 async function getRetentionPolicy(env) {
@@ -388,21 +419,21 @@ async function runRetentionCleanup(env, dryRun) {
 }
 
 async function handleRetentionPreview(request, env) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
   const report = await runRetentionCleanup(env, true);
   return jsonResponse(report);
 }
 
 async function handleRetentionRun(request, env) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
   const report = await runRetentionCleanup(env, false);
   return jsonResponse({ executed: true, ...report });
 }
 
 async function handleRetentionLog(request, env) {
-  const authFail = requireAuth(request, env);
+  const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
   return jsonResponse(await listRows(env, 'retention_log', 'executed_at DESC'));
 }
@@ -524,6 +555,7 @@ export default {
       if (path === '/api/retention/preview' && method === 'GET') return await handleRetentionPreview(request, env);
       if (path === '/api/retention/run' && method === 'POST') return await handleRetentionRun(request, env);
       if (path === '/api/retention/log' && method === 'GET') return await handleRetentionLog(request, env);
+      if (path === '/api/admin-update' && method === 'POST') return await handleChangePassword(request, env);
 
       const apiMatch = path.match(/^\/api\/(guests|inquiries|offers|bookings|invoices|settings)(?:\/([^/]+))?$/);
       if (apiMatch) {
