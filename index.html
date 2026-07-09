@@ -1360,6 +1360,7 @@ footer{
     ];
 
     window.booked = [new Set(), new Set(), new Set()];
+    window.blockedEdges = [new Set(), new Set(), new Set()];
 
     function parseIcal(text) {
       var tage = new Set();
@@ -1418,17 +1419,32 @@ footer{
         .catch(function() { return new Set(); });
     }
 
+    function fetchBlockedEdges(wohnungParam) {
+      return fetch('/api/public-blocked-edges?wohnung=' + wohnungParam)
+        .then(function(r) { return r.ok ? r.json() : []; })
+        .then(function(list) {
+          var edges = new Set();
+          (list || []).forEach(function(bp) { edges.add(bp.checkIn); edges.add(bp.checkOut); });
+          return edges;
+        })
+        .catch(function() { return new Set(); });
+    }
+
     var loaded = 0;
     ICAL_RAW.forEach(function(url, i) {
       Promise.all([
         new Promise(function(resolve) { fetchWithFallback(url, 0, resolve); }),
         fetchOwnExport(OWN_EXPORT_WOHNUNG[i]),
+        fetchBlockedEdges(OWN_EXPORT_WOHNUNG[i]),
       ]).then(function(results) {
         // Airbnb-Kalender UND unser eigener Export (Buchungen + manuelle Blockierungen)
         // werden zusammengeführt — so sind eigene Blockierungen sofort sichtbar, statt
         // erst auf Airbnbs eigenen, oft stundenlangen Sync-Zyklus warten zu müssen.
         var merged = new Set([...results[0], ...results[1]]);
         window.booked[i] = merged;
+        // Die beiden Randtage jeder manuellen Blockierung (die selbst frei bleiben)
+        // werden separat gemerkt, um sie wie An-/Abreisetage diagonal zu markieren.
+        window.blockedEdges[i] = results[2];
         loaded++;
         if (loaded === ICAL_RAW.length) {
           renderAll();
@@ -1449,7 +1465,7 @@ footer{
       el.style.color = ok ? 'rgba(106,170,74,.8)' : 'rgba(232,224,208,.4)';
     }
 
-    function renderGrid(gridId, bookedSet, accentColor) {
+    function renderGrid(gridId, bookedSet, accentColor, edgeSet) {
       var grid = document.getElementById(gridId);
       if (!grid) return;
       grid.innerHTML = '';
@@ -1481,12 +1497,16 @@ footer{
         var nextStr = ds(nextD.getFullYear(), nextD.getMonth(), nextD.getDate());
         var prevBel = bookedSet.has(prevStr);
         var nextBel = bookedSet.has(nextStr);
+        var isEdge  = edgeSet && edgeSet.has(dStr);
 
         // Anreisetag: erster belegter Tag einer Buchung (Zimmer wird erst abends bezogen —
         // rein rechnerisch könnte an diesem Tag noch jemand anders abreisen).
-        var isArrival = isBel && !prevBel;
-        // Abreisetag: erster freier Tag direkt nach einer Buchung (Zimmer wird morgens frei).
-        var isDeparture = !isBel && prevBel;
+        var prevIsEdge = edgeSet && edgeSet.has(prevStr);
+        var isArrival = isBel && !prevBel && !prevIsEdge;
+        // Abreisetag: erster freier Tag direkt nach einer Buchung (Zimmer wird morgens frei),
+        // ODER ein als Rand einer manuellen Blockierung gemeldeter freier Tag (deckt auch den
+        // Tag VOR einer Blockierung ab, der von der reinen Vortag-Prüfung sonst nicht erfasst wird).
+        var isDeparture = (!isBel && prevBel) || (!isBel && isEdge);
 
         var cls = 'kal-tag';
         if      (isToday) cls += ' heute';
@@ -1506,9 +1526,9 @@ footer{
     function renderAll() {
       var titel = document.getElementById('kal-titel');
       if (titel) titel.textContent = MONATE[vm] + ' ' + vy;
-      renderGrid('kal-grid-0', window.booked[0], 'rgba(180,70,55,.4)');
-      renderGrid('kal-grid-1', window.booked[1], 'rgba(180,70,55,.4)');
-      renderGrid('kal-grid-2', window.booked[2], 'rgba(180,70,55,.4)');
+      renderGrid('kal-grid-0', window.booked[0], 'rgba(180,70,55,.4)', window.blockedEdges[0]);
+      renderGrid('kal-grid-1', window.booked[1], 'rgba(180,70,55,.4)', window.blockedEdges[1]);
+      renderGrid('kal-grid-2', window.booked[2], 'rgba(180,70,55,.4)', window.blockedEdges[2]);
     }
 
     document.getElementById('kal-prev').onclick = function(){
