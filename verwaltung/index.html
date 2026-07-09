@@ -520,6 +520,9 @@
             background: rgba(200,164,58,.4);
             color: var(--licht);
         }
+        .blockcal-tag.halb {
+            background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.35) 50%);
+        }
         .blockcal-tag:not(.leer):not(.past):not(.belegt):hover {
             background: rgba(255,255,255,.1);
         }
@@ -533,6 +536,7 @@
         }
         .blockcal-legend-dot.belegt { background: rgba(180,70,55,.4); }
         .blockcal-legend-dot.ausgewaehlt { background: rgba(200,164,58,.4); }
+        .blockcal-legend-dot.halb { background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.35) 50%); }
     </style>
 </head>
 <body>
@@ -1057,9 +1061,10 @@
                     if (!affectsThisWohnung) return false;
                     const checkIn = new Date(bp.checkIn);
                     const checkOut = new Date(bp.checkOut);
-                    // Anders als bei Gästebuchungen: der letzte Tag einer manuellen
-                    // Blockierung ist mitgesperrt (kein Zimmerwechsel am selben Tag).
-                    return current >= checkIn && current <= checkOut;
+                    // Sowohl der erste (checkIn) als auch der letzte (checkOut) Tag
+                    // einer manuellen Blockierung bleiben frei/verfügbar — nur die
+                    // Tage dazwischen sind wirklich gesperrt.
+                    return current > checkIn && current < checkOut;
                 });
                 if (manuallyBlocked) return true;
 
@@ -2102,16 +2107,22 @@ Deutschland`;
                     const isPast = dateStr < todayStr;
                     const isOccupied = isDateBookedForWohnung(dateStr, blockForm.wohnung);
                     const isInSelection = blockForm.checkIn && dateStr >= blockForm.checkIn && (blockForm.checkOut ? dateStr < blockForm.checkOut : dateStr === blockForm.checkIn);
+                    const isBlockEdge = blockedPeriods.some(bp => {
+                        const affectsThisWohnung = bp.wohnung === blockForm.wohnung || bp.wohnung === 'both' || blockForm.wohnung === 'both';
+                        return affectsThisWohnung && (bp.checkIn === dateStr || bp.checkOut === dateStr);
+                    });
                     let cls = 'blockcal-tag';
                     if (isPast) cls += ' past';
                     else if (isOccupied) cls += ' belegt';
                     else if (isInSelection) cls += ' ausgewaehlt';
+                    else if (isBlockEdge) cls += ' halb';
                     cells.push(
                         <div
                             key={dateStr}
                             className={cls}
                             onClick={() => { if (!isPast) handleBlockCalDayClick(dateStr); }}
                             style={{ cursor: isPast ? 'default' : 'pointer' }}
+                            title={isBlockEdge && !isOccupied ? 'Randtag einer Blockierung — selbst noch verfügbar' : undefined}
                         >
                             {d}
                         </div>
@@ -2132,6 +2143,7 @@ Deutschland`;
                         <div style={{ display: 'flex', gap: '14px', marginTop: '10px', fontSize: '11px', color: 'var(--licht-70)' }}>
                             <span><span className="blockcal-legend-dot belegt"></span> Belegt/blockiert</span>
                             <span><span className="blockcal-legend-dot ausgewaehlt"></span> Ausgewählt</span>
+                            <span><span className="blockcal-legend-dot halb"></span> Randtag (noch frei)</span>
                         </div>
                     </div>
                 );
