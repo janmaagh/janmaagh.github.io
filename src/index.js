@@ -467,6 +467,24 @@ async function handlePublicSettings(request, env) {
   });
 }
 
+// Öffentlicher Endpunkt: liefert die ORIGINAL eingegebenen Start-/Enddaten aller
+// manuellen Blockierungen (unverschoben) — genutzt von der Website, um die
+// beiden Randtage (die selbst frei bleiben) visuell als Übergangstage zu
+// kennzeichnen, genau wie bei An-/Abreisetagen echter Buchungen.
+async function handlePublicBlockedEdges(request, env, wohnungParam) {
+  const validWohnungen = ['wohnung1', 'wohnung2', 'both'];
+  if (!validWohnungen.includes(wohnungParam)) {
+    return errorResponse('Ungültiger Parameter "wohnung"', 400);
+  }
+  const wohnungFilter = wohnungParam === 'both'
+    ? `wohnung IN ('wohnung1', 'wohnung2', 'both')`
+    : `wohnung IN (?, 'both')`;
+  const query = `SELECT check_in, check_out FROM blocked_periods WHERE ${wohnungFilter}`;
+  const stmt = wohnungParam === 'both' ? env.DB.prepare(query) : env.DB.prepare(query).bind(wohnungParam);
+  const { results } = await stmt.all();
+  return jsonResponse(results.map(r => ({ checkIn: r.check_in, checkOut: r.check_out })));
+}
+
 async function handleSettings(request, env, method, key) {
   const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
@@ -872,6 +890,10 @@ export default {
       if (path === '/api/retention/run' && method === 'POST') return await handleRetentionRun(request, env);
       if (path === '/api/retention/log' && method === 'GET') return await handleRetentionLog(request, env);
       if (path === '/api/public-settings' && method === 'GET') return await handlePublicSettings(request, env);
+      if (path === '/api/public-blocked-edges' && method === 'GET') {
+        const wohnung = url.searchParams.get('wohnung') || 'wohnung1';
+        return await handlePublicBlockedEdges(request, env, wohnung);
+      }
       if (path === '/api/admin-update' && method === 'POST') return await handleChangePassword(request, env);
       if (path === '/api/backup' && method === 'GET') return await handleBackupNow(request, env);
       if (path === '/api/backups' && method === 'GET') return await handleListBackups(request, env);
