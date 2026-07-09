@@ -618,14 +618,14 @@ footer{
   background:var(--accent, rgba(180,70,55,.25));
 }
 .kal-tag.belegt.halb-an::after{
-  background:linear-gradient(135deg, transparent 50%, var(--accent, rgba(180,70,55,.35)) 50%);
+  background:linear-gradient(135deg, var(--accent, rgba(180,70,55,.35)) 50%, transparent 50%);
 }
 .kal-tag.frei.halb-ab{
   color:var(--licht-70);
 }
 .kal-tag.frei.halb-ab::after{
   content:'';position:absolute;inset:2px;
-  background:linear-gradient(135deg, transparent 50%, var(--accent, rgba(180,70,55,.28)) 50%);
+  background:linear-gradient(135deg, var(--accent, rgba(180,70,55,.28)) 50%, transparent 50%);
 }
 .kal-tag.frei{
   color:var(--licht-70);
@@ -1328,7 +1328,7 @@ footer{
 
   <div style="display:flex;gap:1.5rem;flex-wrap:wrap;justify-content:center;margin:1rem 0;font-size:.7rem;letter-spacing:.06em;color:var(--licht-40)">
     <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;background:rgba(160,60,50,.35);display:inline-block"></span>Belegt</div>
-    <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;background:linear-gradient(135deg, transparent 50%, rgba(160,60,50,.4) 50%);display:inline-block"></span>An-/Abreisetag (halbtags buchbar)</div>
+    <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;background:linear-gradient(135deg, rgba(160,60,50,.4) 50%, transparent 50%);display:inline-block"></span>An-/Abreisetag (halbtags buchbar)</div>
     <div style="display:flex;align-items:center;gap:.4rem"><span style="width:14px;height:14px;border-radius:2px;border:1px solid rgba(255,255,255,.15);display:inline-block"></span>Frei</div>
   </div>
 
@@ -1413,7 +1413,7 @@ footer{
     var OWN_EXPORT_WOHNUNG = ['both', 'wohnung1', 'wohnung2'];
 
     function fetchOwnExport(wohnungParam) {
-      return fetch('/export.ics?wohnung=' + wohnungParam)
+      return fetch('/export.ics?wohnung=' + wohnungParam + '&includeBlocks=false')
         .then(function(r) { return r.ok ? r.text() : ''; })
         .then(function(text) { return text.indexOf('BEGIN:VCALENDAR') !== -1 ? parseIcal(text) : new Set(); })
         .catch(function() { return new Set(); });
@@ -1424,10 +1424,24 @@ footer{
         .then(function(r) { return r.ok ? r.json() : []; })
         .then(function(list) {
           var edges = new Set();
-          (list || []).forEach(function(bp) { edges.add(bp.checkIn); edges.add(bp.checkOut); });
-          return edges;
+          var occupied = new Set();
+          (list || []).forEach(function(bp) {
+            edges.add(bp.checkIn);
+            edges.add(bp.checkOut);
+            // Belegt sind nur die Tage STRENG zwischen checkIn und checkOut — beide
+            // Randtage bleiben frei/buchbar. Das wird hier bewusst selbst berechnet,
+            // unabhängig davon, wie /export.ics für Airbnb formatiert ist.
+            var cur = new Date(bp.checkIn + 'T00:00:00Z');
+            var end = new Date(bp.checkOut + 'T00:00:00Z');
+            cur.setUTCDate(cur.getUTCDate() + 1);
+            while (cur < end) {
+              occupied.add(cur.toISOString().split('T')[0]);
+              cur.setUTCDate(cur.getUTCDate() + 1);
+            }
+          });
+          return { edges: edges, occupied: occupied };
         })
-        .catch(function() { return new Set(); });
+        .catch(function() { return { edges: new Set(), occupied: new Set() }; });
     }
 
     var loaded = 0;
@@ -1440,11 +1454,11 @@ footer{
         // Airbnb-Kalender UND unser eigener Export (Buchungen + manuelle Blockierungen)
         // werden zusammengeführt — so sind eigene Blockierungen sofort sichtbar, statt
         // erst auf Airbnbs eigenen, oft stundenlangen Sync-Zyklus warten zu müssen.
-        var merged = new Set([...results[0], ...results[1]]);
+        var merged = new Set([...results[0], ...results[1], ...results[2].occupied]);
         window.booked[i] = merged;
         // Die beiden Randtage jeder manuellen Blockierung (die selbst frei bleiben)
         // werden separat gemerkt, um sie wie An-/Abreisetage diagonal zu markieren.
-        window.blockedEdges[i] = results[2];
+        window.blockedEdges[i] = results[2].edges;
         loaded++;
         if (loaded === ICAL_RAW.length) {
           renderAll();
@@ -1503,9 +1517,8 @@ footer{
         // rein rechnerisch könnte an diesem Tag noch jemand anders abreisen).
         var prevIsEdge = edgeSet && edgeSet.has(prevStr);
         var isArrival = isBel && !prevBel && !prevIsEdge;
-        // Abreisetag: erster freier Tag direkt nach einer Buchung (Zimmer wird morgens frei),
-        // ODER ein als Rand einer manuellen Blockierung gemeldeter freier Tag (deckt auch den
-        // Tag VOR einer Blockierung ab, der von der reinen Vortag-Prüfung sonst nicht erfasst wird).
+        // Abreisetag: erster freier Tag direkt nach einer Buchung/Blockierung (Zimmer wird
+        // morgens frei) — die Diagonale zeigt hier nach links (zum vorherigen belegten Tag).
         var isDeparture = (!isBel && prevBel) || (!isBel && isEdge);
 
         var cls = 'kal-tag';
