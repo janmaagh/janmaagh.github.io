@@ -151,6 +151,19 @@ const INQUIRY_FIELDS = {
   policy_accepted_at: 'policyAcceptedAt',
 };
 
+// Legt automatisch einen Gast im Adressbuch an, falls noch keiner mit dieser
+// E-Mail existiert — genutzt bei neuen Anfragen und neuen Buchungen, damit das
+// Gäste-Adressbuch nicht manuell gepflegt werden muss.
+async function ensureGuestExists(env, { name, email, phone, street, houseNumber, zip, city, address }) {
+  if (!email) return;
+  const existing = await env.DB.prepare(`SELECT id FROM guests WHERE lower(email) = lower(?)`).bind(email).first();
+  if (existing) return;
+  await env.DB.prepare(
+    `INSERT INTO guests (name, email, phone, street, house_number, zip, city, address, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(name || '', email, phone || '', street || '', houseNumber || '', zip || '', city || '', address || '', 'Automatisch angelegt').run();
+}
+
 async function handleInquiries(request, env, method, id) {
   if (method === 'GET') {
     const authFail = await requireAuth(request, env);
@@ -183,6 +196,10 @@ async function handleInquiries(request, env, method, id) {
       body.total || 0, body.nights || 0, 'new', body.policyAcceptedAt || null
     ).run();
     const created = await getRow(env, 'inquiries', newId);
+    await ensureGuestExists(env, {
+      name: body.name, email: body.email, phone: body.phone,
+      street: body.street, houseNumber: body.houseNumber, zip: body.zip, city: body.city, address: body.address,
+    });
     return jsonResponse(created, 201);
   }
 
@@ -238,6 +255,7 @@ async function handleBookings(request, env, method, id) {
       boolToInt(b.dogFee), b.dogCount || 1, boolToInt(b.projektSpace), boolToInt(b.projektSpaceCleaning),
       b.total || 0, b.deposit || 0, b.downPayment || 0, b.remaining || 0, b.status || 'awaiting_deposit'
     ).run();
+    await ensureGuestExists(env, { name: b.guestName, email: b.guestEmail, phone: b.guestPhone, address: b.guestAddress });
     return jsonResponse(await getRow(env, 'bookings', newId), 201);
   }
 
@@ -746,11 +764,20 @@ async function handleExportIcs(request, env, wohnungParam) {
     ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
     ics += 'END:VEVENT\r\n';
   }
+  function addOneDay(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().split('T')[0];
+  }
+
   for (const b of blockedResults) {
     ics += 'BEGIN:VEVENT\r\n';
     ics += `UID:${b.id}@greenhouse-fuerstenberg.de\r\n`;
     ics += `DTSTART;VALUE=DATE:${toIcsDate(b.check_in)}\r\n`;
-    ics += `DTEND;VALUE=DATE:${toIcsDate(b.check_out)}\r\n`;
+    // Anders als bei Gästebuchungen: Der letzte Tag einer manuellen Blockierung
+    // soll komplett gesperrt sein (kein Zimmerwechsel am selben Tag), deshalb hier
+    // ein Tag zum Enddatum addiert (DTEND ist im iCal-Standard exklusiv).
+    ics += `DTEND;VALUE=DATE:${toIcsDate(addOneDay(b.check_out))}\r\n`;
     ics += `SUMMARY:Blockiert\r\n`;
     ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
     ics += 'END:VEVENT\r\n';
