@@ -773,11 +773,11 @@ async function handleExportIcs(request, env, wohnungParam) {
   for (const b of blockedResults) {
     ics += 'BEGIN:VEVENT\r\n';
     ics += `UID:${b.id}@greenhouse-fuerstenberg.de\r\n`;
-    ics += `DTSTART;VALUE=DATE:${toIcsDate(b.check_in)}\r\n`;
-    // Anders als bei Gästebuchungen: Der letzte Tag einer manuellen Blockierung
-    // soll komplett gesperrt sein (kein Zimmerwechsel am selben Tag), deshalb hier
-    // ein Tag zum Enddatum addiert (DTEND ist im iCal-Standard exklusiv).
-    ics += `DTEND;VALUE=DATE:${toIcsDate(addOneDay(b.check_out))}\r\n`;
+    // Sowohl der erste (checkIn) als auch der letzte (checkOut) Tag einer manuellen
+    // Blockierung bleiben frei/verfügbar — nur die Tage dazwischen sind wirklich
+    // gesperrt. Deshalb startet der Block einen Tag NACH checkIn.
+    ics += `DTSTART;VALUE=DATE:${toIcsDate(addOneDay(b.check_in))}\r\n`;
+    ics += `DTEND;VALUE=DATE:${toIcsDate(b.check_out)}\r\n`;
     ics += `SUMMARY:Blockiert\r\n`;
     ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
     ics += 'END:VEVENT\r\n';
