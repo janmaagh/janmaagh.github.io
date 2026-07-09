@@ -768,6 +768,15 @@
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
 
+            const mapBlockedPeriodFromDb = (row) => ({
+                id: row.id,
+                wohnung: row.wohnung,
+                checkIn: row.check_in,
+                checkOut: row.check_out,
+                reason: row.reason,
+                created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
+            });
+
             const mapBookingFromDb = (row) => ({
                 id: row.id,
                 offerId: row.offer_id,
@@ -800,6 +809,9 @@
             const [guests, setGuests] = useState([]);
             const [offers, setOffers] = useState([]);
             const [bookings, setBookings] = useState([]);
+            const [blockedPeriods, setBlockedPeriods] = useState([]);
+            const [showBlockForm, setShowBlockForm] = useState(false);
+            const [blockForm, setBlockForm] = useState({ wohnung: 'wohnung1', checkIn: '', checkOut: '', reason: '' });
             const [inquiries, setInquiries] = useState([]);
             const [activeTab, setActiveTab] = useState('dashboard');
             const [showGuestForm, setShowGuestForm] = useState(false);
@@ -990,6 +1002,15 @@
                 });
                 if (localBooked) return true;
 
+                const manuallyBlocked = blockedPeriods.some(bp => {
+                    const affectsThisWohnung = bp.wohnung === wohnung || bp.wohnung === 'both' || wohnung === 'both';
+                    if (!affectsThisWohnung) return false;
+                    const checkIn = new Date(bp.checkIn);
+                    const checkOut = new Date(bp.checkOut);
+                    return current >= checkIn && current < checkOut;
+                });
+                if (manuallyBlocked) return true;
+
                 // Beim Bearbeiten eines bestehenden Angebots/einer Buchung wird der
                 // Airbnb-Abgleich übersprungen: Sobald eine eigene Buchung einmal an
                 // Airbnb exportiert wurde, meldet Airbnb genau diesen Zeitraum als belegt
@@ -1022,17 +1043,19 @@
                 // aus der Datenbank statt aus localStorage.
                 (async () => {
                     try {
-                        const [dbGuests, dbOffers, dbInquiries, dbBookings, dbSettings] = await Promise.all([
+                        const [dbGuests, dbOffers, dbInquiries, dbBookings, dbSettings, dbBlockedPeriods] = await Promise.all([
                             apiFetch('/api/guests'),
                             apiFetch('/api/offers'),
                             apiFetch('/api/inquiries'),
                             apiFetch('/api/bookings'),
                             apiFetch('/api/settings'),
+                            apiFetch('/api/blocked-periods'),
                         ]);
                         setGuests((dbGuests || []).map(mapGuestFromDb));
                         setOffers((dbOffers || []).map(mapOfferFromDb));
                         setInquiries((dbInquiries || []).map(mapInquiryFromDb));
                         setBookings((dbBookings || []).map(mapBookingFromDb));
+                        setBlockedPeriods((dbBlockedPeriods || []).map(mapBlockedPeriodFromDb));
 
                         if (dbSettings && dbSettings.cancellation_policy) {
                             setCancellationPolicy(dbSettings.cancellation_policy);
@@ -1966,6 +1989,33 @@ Deutschland`;
                     alert('Buchung konnte nicht gelöscht werden: ' + err.message);
                 }
             };
+
+            const createBlockedPeriod = async () => {
+                if (!blockForm.checkIn || !blockForm.checkOut) {
+                    alert('Bitte Start- und Enddatum angeben.');
+                    return;
+                }
+                try {
+                    const created = await apiFetch('/api/blocked-periods', {
+                        method: 'POST',
+                        body: JSON.stringify(blockForm),
+                    });
+                    setBlockedPeriods([...blockedPeriods, mapBlockedPeriodFromDb(created)]);
+                    setBlockForm({ wohnung: 'wohnung1', checkIn: '', checkOut: '', reason: '' });
+                    setShowBlockForm(false);
+                } catch (err) {
+                    alert('Zeitraum konnte nicht blockiert werden: ' + err.message);
+                }
+            };
+
+            const deleteBlockedPeriod = async (id) => {
+                try {
+                    await apiFetch(`/api/blocked-periods/${id}`, { method: 'DELETE' });
+                    setBlockedPeriods(blockedPeriods.filter(bp => bp.id !== id));
+                } catch (err) {
+                    alert('Blockierung konnte nicht aufgehoben werden: ' + err.message);
+                }
+            };
             const wohnungLabel = (w) => w === 'wohnung1' ? 'Wohnung I' : w === 'wohnung2' ? 'Wohnung II' : 'Beide Wohnungen';
 
             // Preis für eine zusätzliche Person ab einem bestimmten Index. Gibt es für
@@ -2801,6 +2851,38 @@ Deutschland
                 }
             };
 
+            const undoAcceptInquiry = async (inquiry) => {
+                const offer = offers.find(o => o.sourceInquiryId === inquiry.id);
+                if (!offer) {
+                    alert('Zu dieser Anfrage wurde kein zugehöriges Angebot gefunden — kann nicht automatisch rückgängig gemacht werden.');
+                    return;
+                }
+                const booking = bookings.find(b => b.offerId === offer.id);
+                const hasInvoice = booking && invoices.some(inv => inv.sourceRef === `booking:${booking.id}`);
+
+                const confirmMsg = hasInvoice
+                    ? 'Für diese Buchung wurde bereits eine Rechnung erstellt. Die Rechnung bleibt unangetastet bestehen, auch wenn du Angebot und Buchung jetzt löschst. Trotzdem fortfahren?'
+                    : 'Anfrage wirklich rückgängig machen? Das zugehörige Angebot und die Buchung werden gelöscht, die Anfrage springt zurück auf "Neu".';
+                if (!confirm(confirmMsg)) return;
+
+                try {
+                    if (booking) {
+                        await apiFetch(`/api/bookings/${booking.id}`, { method: 'DELETE' });
+                    }
+                    await apiFetch(`/api/offers/${offer.id}`, { method: 'DELETE' });
+                    await apiFetch(`/api/inquiries/${inquiry.id}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ status: 'new' }),
+                    });
+
+                    if (booking) setBookings(bookings.filter(b => b.id !== booking.id));
+                    setOffers(offers.filter(o => o.id !== offer.id));
+                    setInquiries(inquiries.map(inq => inq.id === inquiry.id ? { ...inq, status: 'new' } : inq));
+                } catch (err) {
+                    alert('Rückgängig machen fehlgeschlagen: ' + err.message);
+                }
+            };
+
             const rejectInquiry = async (id) => {
                 try {
                     await apiFetch(`/api/inquiries/${id}`, {
@@ -3069,9 +3151,14 @@ Deutschland
                                             </React.Fragment>
                                         )}
                                         {inquiry.status === 'accepted' && (() => {
-                                            const matchingOffer = offers.find(o => o.guestId === inquiry.id);
+                                            const matchingOffer = offers.find(o => o.sourceInquiryId === inquiry.id);
                                             return matchingOffer ? (
-                                                <button className="secondary" onClick={() => setShowMailPreview(matchingOffer)}>📧 Bestätigungsmail anzeigen</button>
+                                                <React.Fragment>
+                                                    <button className="secondary" onClick={() => setShowMailPreview(matchingOffer)}>📧 Angebot: Mail anzeigen</button>
+                                                    <button className="secondary" onClick={() => printOffer(matchingOffer)}>🖨️ Angebot: Drucken/PDF</button>
+                                                    <button onClick={() => sendOfferWithAttachment(matchingOffer)}>📎 Angebot: PDF senden</button>
+                                                    <button className="danger" onClick={() => undoAcceptInquiry(inquiry)}>↩ Rückgängig machen</button>
+                                                </React.Fragment>
                                             ) : null;
                                         })()}
                                         <button className="secondary" onClick={() => startEditInquiry(inquiry)}>✏️ Gästedaten bearbeiten</button>
@@ -3386,6 +3473,61 @@ Deutschland
                     {/* BUCHUNGEN */}
                     {activeTab === 'bookings' && (
                         <div>
+                            <div className="card">
+                                <h3>🚫 Zeitraum blockieren</h3>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
+                                    Für Eigennutzung, Wartung oder sonstige Sperrungen — unabhängig von einer echten Gästebuchung.
+                                    Blockiert den Kalender genauso wie eine Buchung, inklusive Airbnb-Export.
+                                </p>
+                                <button style={{ marginBottom: '16px' }} onClick={() => setShowBlockForm(!showBlockForm)}>
+                                    {showBlockForm ? '✕ Abbrechen' : '+ Zeitraum blockieren'}
+                                </button>
+
+                                {showBlockForm && (
+                                    <div>
+                                        <div className="grid">
+                                            <div className="form-group">
+                                                <label>Wohnung</label>
+                                                <select value={blockForm.wohnung} onChange={(e) => setBlockForm({ ...blockForm, wohnung: e.target.value })}>
+                                                    <option value="wohnung1">Wohnung I</option>
+                                                    <option value="wohnung2">Wohnung II</option>
+                                                    <option value="both">Beide Wohnungen</option>
+                                                </select>
+                                            </div>
+                                            <div className="form-group">
+                                                <label>Von</label>
+                                                <input type="date" value={blockForm.checkIn} onChange={(e) => setBlockForm({ ...blockForm, checkIn: e.target.value })} />
+                                            </div>
+                                            <div className="form-group">
+                                                <label>Bis</label>
+                                                <input type="date" value={blockForm.checkOut} onChange={(e) => setBlockForm({ ...blockForm, checkOut: e.target.value })} />
+                                            </div>
+                                        </div>
+                                        <div className="form-group">
+                                            <label>Grund (optional, nur intern sichtbar)</label>
+                                            <input type="text" value={blockForm.reason} onChange={(e) => setBlockForm({ ...blockForm, reason: e.target.value })} placeholder="z.B. Eigennutzung, Renovierung..." />
+                                        </div>
+                                        <button onClick={createBlockedPeriod}>Blockierung speichern</button>
+                                    </div>
+                                )}
+
+                                {blockedPeriods.length > 0 && (
+                                    <div style={{ marginTop: '16px' }}>
+                                        {blockedPeriods.map(bp => (
+                                            <div key={bp.id} className="item-card" style={{ padding: '10px 14px', marginBottom: '8px' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '13px' }}>
+                                                        {wohnungLabel(bp.wohnung)} · {bp.checkIn} bis {bp.checkOut}
+                                                        {bp.reason && <span style={{ color: 'var(--licht-70)' }}> — {bp.reason}</span>}
+                                                    </span>
+                                                    <button className="danger" onClick={() => deleteBlockedPeriod(bp.id)}>Aufheben</button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
                             {bookings.map(booking => (
                                 <div key={booking.id} className="item-card">
                                     <div className="item-header">
