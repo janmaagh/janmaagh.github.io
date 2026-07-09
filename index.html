@@ -176,6 +176,7 @@ body{
   color:var(--licht-40);text-decoration:none;transition:color .3s;
 }
 .nav-links a:hover{color:var(--licht);}
+.nav-links-buchen-mobil{display:none;}
 .nav-buch{
   font-size:.65rem;letter-spacing:.18em;text-transform:uppercase;
   color:#c8a43a;text-decoration:none;
@@ -748,6 +749,16 @@ footer{
     text-decoration:none;
   }
   .nav-buch{display:none;}
+  .nav-links-buchen-mobil{
+    display:list-item;
+    margin-top:var(--s4);
+  }
+  .nav-links-buchen-mobil a{
+    color:#c8a43a !important;
+    border:1px solid #c8a43a;
+    padding:.7em 1.6em;
+    border-radius:2px;
+  }
   .mosaik{grid-template-columns:1fr !important;}
   .zz{min-height:320px;}
   .zz.hoch{grid-row:span 1;} /* disable double-height on mobile */
@@ -940,6 +951,7 @@ footer{
     <li><a href="#lage">Lage</a></li>
     <li><a href="#verfuegbarkeit">Verfügbarkeit</a></li>
     <li><a href="#kontakt">Anfrage</a></li>
+    <li class="nav-links-buchen-mobil"><a href="/buchen">Buchen</a></li>
   </ul>
   <a class="nav-buch" href="/buchen">Buchen</a>
 </nav>
@@ -1476,9 +1488,9 @@ footer{
     function renderAll() {
       var titel = document.getElementById('kal-titel');
       if (titel) titel.textContent = MONATE[vm] + ' ' + vy;
-      renderGrid('kal-grid-0', window.booked[0], 'rgba(106,170,74,.4)');
-      renderGrid('kal-grid-1', window.booked[1], 'rgba(90,145,200,.4)');
-      renderGrid('kal-grid-2', window.booked[2], 'rgba(200,164,58,.4)');
+      renderGrid('kal-grid-0', window.booked[0], 'rgba(180,70,55,.4)');
+      renderGrid('kal-grid-1', window.booked[1], 'rgba(180,70,55,.4)');
+      renderGrid('kal-grid-2', window.booked[2], 'rgba(180,70,55,.4)');
     }
 
     document.getElementById('kal-prev').onclick = function(){
