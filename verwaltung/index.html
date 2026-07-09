@@ -487,6 +487,52 @@
                 gap: 8px;
             }
         }
+
+        .blockcal { max-width: 360px; margin: 16px 0; }
+        .blockcal-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 4px;
+        }
+        .blockcal-weekday {
+            text-align: center;
+            font-size: 11px;
+            color: var(--licht-70);
+            padding-bottom: 4px;
+        }
+        .blockcal-tag {
+            aspect-ratio: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            border-radius: 4px;
+            background: rgba(255,255,255,.04);
+        }
+        .blockcal-tag.leer { background: transparent; }
+        .blockcal-tag.past { opacity: .3; }
+        .blockcal-tag.belegt {
+            background: rgba(180,70,55,.4);
+            color: rgba(232,224,208,.5);
+            cursor: not-allowed !important;
+        }
+        .blockcal-tag.ausgewaehlt {
+            background: rgba(200,164,58,.4);
+            color: var(--licht);
+        }
+        .blockcal-tag:not(.leer):not(.past):not(.belegt):hover {
+            background: rgba(255,255,255,.1);
+        }
+        .blockcal-legend-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .blockcal-legend-dot.belegt { background: rgba(180,70,55,.4); }
+        .blockcal-legend-dot.ausgewaehlt { background: rgba(200,164,58,.4); }
     </style>
 </head>
 <body>
@@ -811,6 +857,10 @@
             const [bookings, setBookings] = useState([]);
             const [blockedPeriods, setBlockedPeriods] = useState([]);
             const [showBlockForm, setShowBlockForm] = useState(false);
+            const [blockCalMonth, setBlockCalMonth] = useState(() => {
+                const now = new Date();
+                return { year: now.getFullYear(), month: now.getMonth() };
+            });
             const [blockForm, setBlockForm] = useState({ wohnung: 'wohnung1', checkIn: '', checkOut: '', reason: '' });
             const [inquiries, setInquiries] = useState([]);
             const [activeTab, setActiveTab] = useState('dashboard');
@@ -2016,6 +2066,75 @@ Deutschland`;
                     alert('Blockierung konnte nicht aufgehoben werden: ' + err.message);
                 }
             };
+
+            // Hilfsfunktionen für die Kalenderansicht im "Zeitraum blockieren"-Formular
+            const blockCalDs = (y, m, d) => `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+
+            const handleBlockCalDayClick = (dateStr) => {
+                if (!blockForm.checkIn || (blockForm.checkIn && blockForm.checkOut)) {
+                    // Neue Auswahl beginnen
+                    setBlockForm({ ...blockForm, checkIn: dateStr, checkOut: '' });
+                } else if (dateStr <= blockForm.checkIn) {
+                    // Vor dem Start geklickt: Start neu setzen
+                    setBlockForm({ ...blockForm, checkIn: dateStr, checkOut: '' });
+                } else {
+                    setBlockForm({ ...blockForm, checkOut: dateStr });
+                }
+            };
+
+            const renderBlockCalendarMonth = () => {
+                const { year, month } = blockCalMonth;
+                const firstOfMonth = new Date(year, month, 1);
+                const daysInMonth = new Date(year, month + 1, 0).getDate();
+                // Montag = 0 ... Sonntag = 6
+                const startOffset = (firstOfMonth.getDay() + 6) % 7;
+                const todayStr = blockCalDs(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+                const monthNames = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
+
+                const cells = [];
+                for (let i = 0; i < startOffset; i++) {
+                    cells.push(<div key={'empty-' + i} className="blockcal-tag leer"></div>);
+                }
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const dateStr = blockCalDs(year, month, d);
+                    const isPast = dateStr < todayStr;
+                    const isOccupied = isDateBookedForWohnung(dateStr, blockForm.wohnung);
+                    const isInSelection = blockForm.checkIn && dateStr >= blockForm.checkIn && (blockForm.checkOut ? dateStr < blockForm.checkOut : dateStr === blockForm.checkIn);
+                    let cls = 'blockcal-tag';
+                    if (isPast) cls += ' past';
+                    else if (isOccupied) cls += ' belegt';
+                    else if (isInSelection) cls += ' ausgewaehlt';
+                    cells.push(
+                        <div
+                            key={dateStr}
+                            className={cls}
+                            onClick={() => { if (!isPast) handleBlockCalDayClick(dateStr); }}
+                            style={{ cursor: isPast ? 'default' : 'pointer' }}
+                        >
+                            {d}
+                        </div>
+                    );
+                }
+
+                return (
+                    <div className="blockcal">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                            <button type="button" className="secondary" onClick={() => setBlockCalMonth(m => m.month === 0 ? { year: m.year - 1, month: 11 } : { year: m.year, month: m.month - 1 })}>←</button>
+                            <strong>{monthNames[month]} {year}</strong>
+                            <button type="button" className="secondary" onClick={() => setBlockCalMonth(m => m.month === 11 ? { year: m.year + 1, month: 0 } : { year: m.year, month: m.month + 1 })}>→</button>
+                        </div>
+                        <div className="blockcal-grid">
+                            {['Mo','Di','Mi','Do','Fr','Sa','So'].map(d => <div key={d} className="blockcal-weekday">{d}</div>)}
+                            {cells}
+                        </div>
+                        <div style={{ display: 'flex', gap: '14px', marginTop: '10px', fontSize: '11px', color: 'var(--licht-70)' }}>
+                            <span><span className="blockcal-legend-dot belegt"></span> Belegt/blockiert</span>
+                            <span><span className="blockcal-legend-dot ausgewaehlt"></span> Ausgewählt</span>
+                        </div>
+                    </div>
+                );
+            };
+
             const wohnungLabel = (w) => w === 'wohnung1' ? 'Wohnung I' : w === 'wohnung2' ? 'Wohnung II' : 'Beide Wohnungen';
 
             // Preis für eine zusätzliche Person ab einem bestimmten Index. Gibt es für
@@ -3005,6 +3124,7 @@ Deutschland
                         <button className={`tab-btn ${activeTab === 'guests' ? 'active' : ''}`} onClick={() => setActiveTab('guests')}>Gäste</button>
                         <button className={`tab-btn ${activeTab === 'offers' ? 'active' : ''}`} onClick={() => setActiveTab('offers')}>Angebote</button>
                         <button className={`tab-btn ${activeTab === 'bookings' ? 'active' : ''}`} onClick={() => setActiveTab('bookings')}>Buchungen</button>
+                        <button className={`tab-btn ${activeTab === 'occupancy' ? 'active' : ''}`} onClick={() => setActiveTab('occupancy')}>Belegung</button>
                         <button className={`tab-btn ${activeTab === 'revenue' ? 'active' : ''}`} onClick={() => setActiveTab('revenue')}>Einnahmen</button>
                         <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>Rechnungen</button>
                         <button className={`tab-btn ${activeTab === 'pricing' ? 'active' : ''}`} onClick={() => setActiveTab('pricing')}>Preise &amp; Bedingungen</button>
@@ -3473,61 +3593,6 @@ Deutschland
                     {/* BUCHUNGEN */}
                     {activeTab === 'bookings' && (
                         <div>
-                            <div className="card">
-                                <h3>🚫 Zeitraum blockieren</h3>
-                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
-                                    Für Eigennutzung, Wartung oder sonstige Sperrungen — unabhängig von einer echten Gästebuchung.
-                                    Blockiert den Kalender genauso wie eine Buchung, inklusive Airbnb-Export.
-                                </p>
-                                <button style={{ marginBottom: '16px' }} onClick={() => setShowBlockForm(!showBlockForm)}>
-                                    {showBlockForm ? '✕ Abbrechen' : '+ Zeitraum blockieren'}
-                                </button>
-
-                                {showBlockForm && (
-                                    <div>
-                                        <div className="grid">
-                                            <div className="form-group">
-                                                <label>Wohnung</label>
-                                                <select value={blockForm.wohnung} onChange={(e) => setBlockForm({ ...blockForm, wohnung: e.target.value })}>
-                                                    <option value="wohnung1">Wohnung I</option>
-                                                    <option value="wohnung2">Wohnung II</option>
-                                                    <option value="both">Beide Wohnungen</option>
-                                                </select>
-                                            </div>
-                                            <div className="form-group">
-                                                <label>Von</label>
-                                                <input type="date" value={blockForm.checkIn} onChange={(e) => setBlockForm({ ...blockForm, checkIn: e.target.value })} />
-                                            </div>
-                                            <div className="form-group">
-                                                <label>Bis</label>
-                                                <input type="date" value={blockForm.checkOut} onChange={(e) => setBlockForm({ ...blockForm, checkOut: e.target.value })} />
-                                            </div>
-                                        </div>
-                                        <div className="form-group">
-                                            <label>Grund (optional, nur intern sichtbar)</label>
-                                            <input type="text" value={blockForm.reason} onChange={(e) => setBlockForm({ ...blockForm, reason: e.target.value })} placeholder="z.B. Eigennutzung, Renovierung..." />
-                                        </div>
-                                        <button onClick={createBlockedPeriod}>Blockierung speichern</button>
-                                    </div>
-                                )}
-
-                                {blockedPeriods.length > 0 && (
-                                    <div style={{ marginTop: '16px' }}>
-                                        {blockedPeriods.map(bp => (
-                                            <div key={bp.id} className="item-card" style={{ padding: '10px 14px', marginBottom: '8px' }}>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                    <span style={{ fontSize: '13px' }}>
-                                                        {wohnungLabel(bp.wohnung)} · {bp.checkIn} bis {bp.checkOut}
-                                                        {bp.reason && <span style={{ color: 'var(--licht-70)' }}> — {bp.reason}</span>}
-                                                    </span>
-                                                    <button className="danger" onClick={() => deleteBlockedPeriod(bp.id)}>Aufheben</button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-
                             {bookings.map(booking => (
                                 <div key={booking.id} className="item-card">
                                     <div className="item-header">
@@ -3600,6 +3665,70 @@ Deutschland
                                 </div>
                             ))}
                             {bookings.length === 0 && <p style={{ color: 'var(--licht-70)', textAlign: 'center', padding: '40px 0' }}>Noch keine Buchungen</p>}
+                        </div>
+                    )}
+
+                    {/* BELEGUNG */}
+                    {activeTab === 'occupancy' && (
+                        <div>
+                            <div className="card">
+                                <h3>🚫 Zeitraum blockieren</h3>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
+                                    Für Eigennutzung, Wartung oder sonstige Sperrungen — unabhängig von einer echten Gästebuchung.
+                                    Blockiert den Kalender genauso wie eine Buchung, inklusive Airbnb-Export.
+                                </p>
+                                <button style={{ marginBottom: '16px' }} onClick={() => setShowBlockForm(!showBlockForm)}>
+                                    {showBlockForm ? '✕ Abbrechen' : '+ Zeitraum blockieren'}
+                                </button>
+
+                                {showBlockForm && (
+                                    <div>
+                                        <div className="grid">
+                                            <div className="form-group">
+                                                <label>Wohnung</label>
+                                                <select value={blockForm.wohnung} onChange={(e) => setBlockForm({ ...blockForm, wohnung: e.target.value })}>
+                                                    <option value="wohnung1">Wohnung I</option>
+                                                    <option value="wohnung2">Wohnung II</option>
+                                                    <option value="both">Beide Wohnungen</option>
+                                                </select>
+                                            </div>
+                                            <div className="form-group">
+                                                <label>Von</label>
+                                                <input type="date" value={blockForm.checkIn} onChange={(e) => setBlockForm({ ...blockForm, checkIn: e.target.value })} />
+                                            </div>
+                                            <div className="form-group">
+                                                <label>Bis</label>
+                                                <input type="date" value={blockForm.checkOut} onChange={(e) => setBlockForm({ ...blockForm, checkOut: e.target.value })} />
+                                            </div>
+                                        </div>
+
+                                        <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginBottom: 0 }}>
+                                            Kalender zur Übersicht — Klick auf einen freien Tag wählt den Start, ein zweiter Klick das Ende. Rot = bereits belegt/blockiert (Buchungen, andere Blockierungen und Airbnb-Sync).
+                                        </p>
+                                        {renderBlockCalendarMonth()}
+
+                                        <div className="form-group">
+                                            <label>Grund (optional, nur intern sichtbar)</label>
+                                            <input type="text" value={blockForm.reason} onChange={(e) => setBlockForm({ ...blockForm, reason: e.target.value })} placeholder="z.B. Eigennutzung, Renovierung..." />
+                                        </div>
+                                        <button onClick={createBlockedPeriod}>Blockierung speichern</button>
+                                    </div>
+                                )}
+                            </div>
+
+                            <h4 style={{ marginTop: '20px', marginBottom: '12px' }}>Aktuell blockierte Zeiträume</h4>
+                            {blockedPeriods.length === 0 && <p style={{ color: 'var(--licht-70)', textAlign: 'center', padding: '20px 0' }}>Keine manuellen Blockierungen vorhanden</p>}
+                            {blockedPeriods.map(bp => (
+                                <div key={bp.id} className="item-card" style={{ padding: '10px 14px', marginBottom: '8px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <span style={{ fontSize: '13px' }}>
+                                            {wohnungLabel(bp.wohnung)} · {bp.checkIn} bis {bp.checkOut}
+                                            {bp.reason && <span style={{ color: 'var(--licht-70)' }}> — {bp.reason}</span>}
+                                        </span>
+                                        <button className="danger" onClick={() => deleteBlockedPeriod(bp.id)}>Aufheben</button>
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     )}
 
