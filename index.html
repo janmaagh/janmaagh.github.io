@@ -1407,10 +1407,27 @@ footer{
         });
     }
 
+    // Reihenfolge entspricht ICAL_RAW: [0]=both, [1]=wohnung1, [2]=wohnung2
+    var OWN_EXPORT_WOHNUNG = ['both', 'wohnung1', 'wohnung2'];
+
+    function fetchOwnExport(wohnungParam) {
+      return fetch('/export.ics?wohnung=' + wohnungParam)
+        .then(function(r) { return r.ok ? r.text() : ''; })
+        .then(function(text) { return text.indexOf('BEGIN:VCALENDAR') !== -1 ? parseIcal(text) : new Set(); })
+        .catch(function() { return new Set(); });
+    }
+
     var loaded = 0;
     ICAL_RAW.forEach(function(url, i) {
-      fetchWithFallback(url, 0, function(tage) {
-        window.booked[i] = tage;
+      Promise.all([
+        new Promise(function(resolve) { fetchWithFallback(url, 0, resolve); }),
+        fetchOwnExport(OWN_EXPORT_WOHNUNG[i]),
+      ]).then(function(results) {
+        // Airbnb-Kalender UND unser eigener Export (Buchungen + manuelle Blockierungen)
+        // werden zusammengeführt — so sind eigene Blockierungen sofort sichtbar, statt
+        // erst auf Airbnbs eigenen, oft stundenlangen Sync-Zyklus warten zu müssen.
+        var merged = new Set([...results[0], ...results[1]]);
+        window.booked[i] = merged;
         loaded++;
         if (loaded === ICAL_RAW.length) {
           renderAll();
