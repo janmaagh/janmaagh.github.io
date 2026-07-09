@@ -1057,7 +1057,9 @@
                     if (!affectsThisWohnung) return false;
                     const checkIn = new Date(bp.checkIn);
                     const checkOut = new Date(bp.checkOut);
-                    return current >= checkIn && current < checkOut;
+                    // Anders als bei Gästebuchungen: der letzte Tag einer manuellen
+                    // Blockierung ist mitgesperrt (kein Zimmerwechsel am selben Tag).
+                    return current >= checkIn && current <= checkOut;
                 });
                 if (manuallyBlocked) return true;
 
@@ -3014,6 +3016,16 @@ Deutschland
                 }
             };
 
+            const deleteInquiry = async (id) => {
+                if (!confirm('Diese Anfrage endgültig löschen? Das kann nicht rückgängig gemacht werden.')) return;
+                try {
+                    await apiFetch(`/api/inquiries/${id}`, { method: 'DELETE' });
+                    setInquiries(inquiries.filter(inq => inq.id !== id));
+                } catch (err) {
+                    alert('Anfrage konnte nicht gelöscht werden: ' + err.message);
+                }
+            };
+
             const [editingInquiryId, setEditingInquiryId] = useState(null);
             const [inquiryEditForm, setInquiryEditForm] = useState({ name: '', email: '', phone: '', street: '', houseNumber: '', zip: '', city: '' });
 
@@ -3283,6 +3295,7 @@ Deutschland
                                         })()}
                                         <button className="secondary" onClick={() => startEditInquiry(inquiry)}>✏️ Gästedaten bearbeiten</button>
                                         <button className="secondary" onClick={() => { applySourceToInvoice('inquiry:' + inquiry.id); setActiveTab('invoices'); setShowInvoiceForm(true); }}>🧾 Rechnung erstellen</button>
+                                        <button className="danger" onClick={() => deleteInquiry(inquiry.id)}>🗑️ Löschen</button>
                                     </div>
                                     </React.Fragment>
                                     )}
