@@ -2,6 +2,10 @@
 // Greenhouse Market — Backend-Worker
 // Liefert die statische Website aus UND stellt die API für das Booking-System
 // bereit (Gäste, Anfragen, Angebote, Buchungen, Rechnungen, Einstellungen).
+//
+// WICHTIG: Dies ist der Startpunkt der Datenbank-Anbindung. Die React-Tools
+// (Greenhouse___Booking.html, Greenhouse___Buchung.html) müssen im nächsten
+// Schritt noch umgebaut werden, damit sie diese API statt localStorage nutzen.
 // ============================================================================
 
 function jsonResponse(data, status = 200) {
@@ -18,6 +22,10 @@ function errorResponse(message, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
+// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
+// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
+// Wandelt ein Passwort in einen SHA-256-Hash um (Hex-String). So liegt das
+// eigentliche Passwort nie im Klartext in der Datenbank.
 async function hashPassword(password) {
   const encoder = new TextEncoder();
   const data = encoder.encode(password);
@@ -25,6 +33,15 @@ async function hashPassword(password) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
+// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
+//
+// Zwei mögliche Quellen für das gültige Passwort:
+// 1. Ein in der Datenbank gespeicherter Passwort-Hash (wurde übers Booking-Tool
+//    selbst gesetzt/geändert) — wird bevorzugt geprüft, falls vorhanden.
+// 2. Fallback: das Cloudflare-Secret ADMIN_TOKEN (der ursprüngliche, beim
+//    Einrichten per Dashboard/Wrangler gesetzte Wert) — greift nur, solange
+//    noch kein Passwort in der Datenbank gesetzt wurde.
 async function checkAuth(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const token = authHeader.replace('Bearer ', '');
@@ -47,6 +64,10 @@ async function requireAuth(request, env) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Hilfsfunktionen für generische CRUD-Operationen auf einer Tabelle
+// ---------------------------------------------------------------------------
+
 async function listRows(env, table, orderBy = 'created_at DESC') {
   const { results } = await env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all();
   return results;
@@ -60,6 +81,8 @@ async function deleteRow(env, table, id) {
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
 }
 
+// Wandelt ein JS-Objekt (camelCase) in eine INSERT/UPDATE-freundliche Form um,
+// basierend auf einer expliziten Feldliste (snake_case Spaltennamen -> camelCase Keys).
 function pick(obj, fieldMap) {
   const out = {};
   for (const [column, key] of Object.entries(fieldMap)) {
@@ -71,6 +94,10 @@ function pick(obj, fieldMap) {
 function boolToInt(v) {
   return v ? 1 : 0;
 }
+
+// ---------------------------------------------------------------------------
+// Gäste
+// ---------------------------------------------------------------------------
 
 const GUEST_FIELDS = {
   name: 'name', email: 'email', phone: 'phone',
@@ -112,6 +139,10 @@ async function handleGuests(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
+// ---------------------------------------------------------------------------
+// Anfragen (POST ist öffentlich — kommt vom Gäste-Tool ohne Login)
+// ---------------------------------------------------------------------------
+
 const INQUIRY_FIELDS = {
   name: 'name', email: 'email', phone: 'phone',
   street: 'street', house_number: 'houseNumber', zip: 'zip', city: 'city', address: 'address',
@@ -128,6 +159,7 @@ async function handleInquiries(request, env, method, id) {
   }
 
   if (method === 'POST') {
+    // Öffentlich erreichbar — jeder Gast darf eine Anfrage einreichen.
     const body = await request.json();
     if (!body.name || !body.email || !body.checkIn || !body.checkOut || !body.wohnung) {
       return errorResponse('Pflichtfelder fehlen (name, email, checkIn, checkOut, wohnung)');
@@ -179,6 +211,10 @@ async function handleInquiries(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
+// ---------------------------------------------------------------------------
+// Buchungen — DIESE Tabelle speist den Airbnb-Export!
+// ---------------------------------------------------------------------------
+
 async function handleBookings(request, env, method, id) {
   const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
@@ -229,6 +265,10 @@ async function handleBookings(request, env, method, id) {
 
   return errorResponse('Methode nicht unterstützt', 405);
 }
+
+// ---------------------------------------------------------------------------
+// Angebote
+// ---------------------------------------------------------------------------
 
 async function handleOffers(request, env, method, id) {
   const authFail = await requireAuth(request, env);
@@ -305,6 +345,10 @@ async function handleOffers(request, env, method, id) {
 
   return errorResponse('Methode nicht unterstützt', 405);
 }
+
+// ---------------------------------------------------------------------------
+// Rechnungen
+// ---------------------------------------------------------------------------
 
 async function handleInvoices(request, env, method, id) {
   const authFail = await requireAuth(request, env);
@@ -385,6 +429,14 @@ async function handleInvoices(request, env, method, id) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
+// ---------------------------------------------------------------------------
+// Einstellungen (Preise, Firmendaten, Stornobedingungen, Anzahlungs-%)
+// ---------------------------------------------------------------------------
+
+// Öffentlicher, nicht-passwortgeschützter Endpunkt für das Gäste-Tool — zeigt
+// nur die Felder, die Gäste vor einer Buchung legitim sehen müssen (Preise,
+// Stornobedingungen). KEINE Firmendaten (IBAN etc.) oder sonstige interne
+// Einstellungen — diese bleiben ausschließlich über /api/settings (mit Login) erreichbar.
 async function handlePublicSettings(request, env) {
   const pricesRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'prices'`).first();
   const policyRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'cancellation_policy'`).first();
@@ -420,6 +472,42 @@ async function handleSettings(request, env, method, key) {
   return errorResponse('Methode nicht unterstützt', 405);
 }
 
+// ---------------------------------------------------------------------------
+// Manuell blockierte Zeiträume — unabhängig von echten Buchungen (z.B.
+// Eigennutzung, Wartung). Blockieren den Kalender genauso wie echte Buchungen.
+// ---------------------------------------------------------------------------
+
+async function handleBlockedPeriods(request, env, method, id) {
+  const authFail = await requireAuth(request, env);
+  if (authFail) return authFail;
+
+  if (method === 'GET') return jsonResponse(await listRows(env, 'blocked_periods'));
+
+  if (method === 'POST') {
+    const body = await request.json();
+    if (!body.wohnung || !body.checkIn || !body.checkOut) {
+      return errorResponse('Pflichtfelder fehlen (wohnung, checkIn, checkOut)');
+    }
+    const newId = `BLK-${Date.now()}`;
+    await env.DB.prepare(
+      `INSERT INTO blocked_periods (id, wohnung, check_in, check_out, reason) VALUES (?, ?, ?, ?, ?)`
+    ).bind(newId, body.wohnung, body.checkIn, body.checkOut, body.reason || '').run();
+    return jsonResponse(await getRow(env, 'blocked_periods', newId), 201);
+  }
+
+  if (method === 'DELETE' && id) {
+    await deleteRow(env, 'blocked_periods', id);
+    return jsonResponse({ deleted: true });
+  }
+
+  return errorResponse('Methode nicht unterstützt', 405);
+}
+
+// ---------------------------------------------------------------------------
+// Passwort ändern — erfordert gültige aktuelle Authentifizierung.
+// Speichert nur einen SHA-256-Hash, nie das Passwort im Klartext.
+// ---------------------------------------------------------------------------
+
 async function handleChangePassword(request, env) {
   const authFail = await requireAuth(request, env);
   if (authFail) return authFail;
@@ -438,6 +526,14 @@ async function handleChangePassword(request, env) {
 
   return jsonResponse({ changed: true });
 }
+
+// ---------------------------------------------------------------------------
+// Datensicherung — kompletter Export aller Tabellen als JSON.
+// Manuell jederzeit abrufbar, zusätzlich läuft wöchentlich ein automatischer
+// Schnappschuss (siehe scheduled()). Alte automatische Schnappschüsse werden
+// nach einer Weile aufgeräumt (die letzten 12 — ca. 3 Monate wöchentlich —
+// bleiben erhalten).
+// ---------------------------------------------------------------------------
 
 async function buildFullBackup(env) {
   const [guests, inquiries, offers, bookings, invoicesRaw, settingsRows] = await Promise.all([
@@ -503,10 +599,22 @@ async function handleGetBackup(request, env, id) {
 async function createAutomaticBackup(env) {
   const backup = await buildFullBackup(env);
   await env.DB.prepare('INSERT INTO backups (data_json) VALUES (?)').bind(JSON.stringify(backup)).run();
+  // Alte Schnappschüsse aufräumen — die letzten 12 (≈ 3 Monate wöchentlich) bleiben.
   await env.DB.prepare(
     `DELETE FROM backups WHERE id NOT IN (SELECT id FROM backups ORDER BY created_at DESC LIMIT 12)`
   ).run();
 }
+
+// ---------------------------------------------------------------------------
+// Löschkonzept (Art. 5 Abs. 1 lit. e DSGVO — Speicherbegrenzung)
+//
+// - Anfragen ohne Buchung (status 'new'/'rejected'): gelöscht nach X Monaten
+// - Angebote ohne Buchung (status 'sent'): gelöscht nach X Monaten
+// - Buchungen: NICHT gelöscht (Referenz für Rechnungen/Statistik), aber die
+//   Gästedaten werden nach X Jahren nach Abreise ANONYMISIERT
+// - Rechnungen: werden NIE automatisch gelöscht (10 Jahre Aufbewahrungspflicht
+//   nach § 147 AO) — das übernimmt bewusst kein Automatismus.
+// ---------------------------------------------------------------------------
 
 async function getRetentionPolicy(env) {
   const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'retention_policy'`).first();
@@ -525,6 +633,7 @@ async function logRetentionAction(env, action, table, recordId, reason) {
   ).bind(action, table, recordId, reason).run();
 }
 
+// dryRun = true: nur ermitteln, was betroffen wäre, ohne etwas zu verändern.
 async function runRetentionCleanup(env, dryRun) {
   const policy = await getRetentionPolicy(env);
   const report = { staleInquiries: [], staleOffers: [], bookingsToAnonymize: [] };
@@ -590,6 +699,13 @@ async function handleRetentionLog(request, env) {
   return jsonResponse(await listRows(env, 'retention_log', 'executed_at DESC'));
 }
 
+// ---------------------------------------------------------------------------
+// Airbnb-Export: NUR bestätigte Buchungen (status IN awaiting_downpayment,
+// confirmed, completed — d.h. mindestens die Kaution ist bestätigt und die
+// Buchung ist damit verbindlich; "awaiting_deposit" zählt bewusst NICHT als
+// bestätigt und blockiert Airbnb nicht).
+// ---------------------------------------------------------------------------
+
 function toIcsDate(dateStr) {
   return dateStr.replace(/-/g, '');
 }
@@ -600,30 +716,42 @@ async function handleExportIcs(request, env, wohnungParam) {
     return new Response('Ungültiger Parameter "wohnung" (erwartet: wohnung1, wohnung2 oder both)', { status: 400 });
   }
 
+  // "both"-Buchungen blockieren zusätzlich auch die Einzelwohnungen, da bei
+  // Buchung beider Wohnungen natürlich auch jede einzelne belegt ist.
   const wohnungFilter = wohnungParam === 'both'
     ? `wohnung IN ('wohnung1', 'wohnung2', 'both')`
     : `wohnung IN (?, 'both')`;
 
-  const query = `
+  const bookingsQuery = `
     SELECT id, check_in, check_out, guest_name
     FROM bookings
     WHERE status IN ('awaiting_downpayment', 'confirmed', 'completed')
     AND ${wohnungFilter}
   `;
+  const blockedQuery = `SELECT id, check_in, check_out FROM blocked_periods WHERE ${wohnungFilter}`;
 
-  const stmt = wohnungParam === 'both'
-    ? env.DB.prepare(query)
-    : env.DB.prepare(query).bind(wohnungParam);
+  const bookingsStmt = wohnungParam === 'both' ? env.DB.prepare(bookingsQuery) : env.DB.prepare(bookingsQuery).bind(wohnungParam);
+  const blockedStmt = wohnungParam === 'both' ? env.DB.prepare(blockedQuery) : env.DB.prepare(blockedQuery).bind(wohnungParam);
 
-  const { results } = await stmt.all();
+  const { results: bookingResults } = await bookingsStmt.all();
+  const { results: blockedResults } = await blockedStmt.all();
 
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Greenhouse Market//Booking Export//DE\r\nCALSCALE:GREGORIAN\r\n';
-  for (const b of results) {
+  for (const b of bookingResults) {
     ics += 'BEGIN:VEVENT\r\n';
     ics += `UID:${b.id}@greenhouse-fuerstenberg.de\r\n`;
     ics += `DTSTART;VALUE=DATE:${toIcsDate(b.check_in)}\r\n`;
     ics += `DTEND;VALUE=DATE:${toIcsDate(b.check_out)}\r\n`;
     ics += `SUMMARY:Belegt (Greenhouse Booking)\r\n`;
+    ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
+    ics += 'END:VEVENT\r\n';
+  }
+  for (const b of blockedResults) {
+    ics += 'BEGIN:VEVENT\r\n';
+    ics += `UID:${b.id}@greenhouse-fuerstenberg.de\r\n`;
+    ics += `DTSTART;VALUE=DATE:${toIcsDate(b.check_in)}\r\n`;
+    ics += `DTEND;VALUE=DATE:${toIcsDate(b.check_out)}\r\n`;
+    ics += `SUMMARY:Blockiert\r\n`;
     ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
     ics += 'END:VEVENT\r\n';
   }
@@ -634,10 +762,15 @@ async function handleExportIcs(request, env, wohnungParam) {
     headers: {
       'Content-Type': 'text/calendar; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=1800',
+      'Cache-Control': 'public, max-age=1800', // 30 Min. Cache, Airbnb ruft ohnehin nur alle paar Stunden ab
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Bestehender iCal-Proxy (Airbnb -> Website), unverändert aus dem bisherigen
+// Worker übernommen.
+// ---------------------------------------------------------------------------
 
 async function handleIcalProxy(url) {
   const target = url.searchParams.get('url');
@@ -679,6 +812,10 @@ async function handleIcalProxy(url) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Haupt-Router
+// ---------------------------------------------------------------------------
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -714,6 +851,9 @@ export default {
       const backupMatch = path.match(/^\/api\/backups\/(\d+)$/);
       if (backupMatch && method === 'GET') return await handleGetBackup(request, env, backupMatch[1]);
 
+      const blockedMatch = path.match(/^\/api\/blocked-periods(?:\/([^/]+))?$/);
+      if (blockedMatch) return await handleBlockedPeriods(request, env, method, blockedMatch[1]);
+
       const apiMatch = path.match(/^\/api\/(guests|inquiries|offers|bookings|invoices|settings)(?:\/([^/]+))?$/);
       if (apiMatch) {
         const [, resource, id] = apiMatch;
@@ -727,6 +867,7 @@ export default {
         }
       }
 
+      // Alles andere: statische Website ausliefern (index.html, Bilder, ...)
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error('Worker error:', err);
@@ -734,6 +875,10 @@ export default {
     }
   },
 
+  // Wird automatisch per Cron Trigger ausgeführt (siehe wrangler.jsonc,
+  // standardmäßig wöchentlich). Löscht/anonymisiert Daten gemäß Löschkonzept.
+  // Rechnungen sind davon ausdrücklich NIE betroffen (10 Jahre Pflicht-
+  // aufbewahrung nach § 147 AO).
   async scheduled(controller, env, ctx) {
     const report = await runRetentionCleanup(env, false);
     console.log(
