@@ -627,6 +627,13 @@ footer{
   content:'';position:absolute;inset:2px;
   background:linear-gradient(135deg, var(--accent, rgba(180,70,55,.28)) 50%, transparent 50%);
 }
+.kal-tag.frei.halb-vor{
+  color:var(--licht-70);
+}
+.kal-tag.frei.halb-vor::after{
+  content:'';position:absolute;inset:2px;
+  background:linear-gradient(135deg, transparent 50%, var(--accent, rgba(180,70,55,.28)) 50%);
+}
 .kal-tag.frei{
   color:var(--licht-70);
 }
@@ -1517,17 +1524,19 @@ footer{
         // rein rechnerisch könnte an diesem Tag noch jemand anders abreisen).
         var prevIsEdge = edgeSet && edgeSet.has(prevStr);
         var isArrival = isBel && !prevBel && !prevIsEdge;
-        // Abreisetag: erster freier Tag direkt nach einer Buchung/Blockierung (Zimmer wird
-        // morgens frei) — die Diagonale zeigt hier nach links (zum vorherigen belegten Tag).
-        var isDeparture = (!isBel && prevBel) || (!isBel && isEdge);
+        // Abreisetag: erster freier Tag direkt nach einer Buchung (Zimmer wird morgens frei).
+        var isDeparture = !isBel && prevBel;
+        // Randtag VOR einer Blockierung (z.B. Tag 1 bei 1.–7. blockiert) — liegt auf der
+        // anderen Seite des belegten Bereichs, braucht deshalb die gespiegelte Diagonale.
+        var isPreBlock = !isBel && isEdge && !isDeparture;
 
         var cls = 'kal-tag';
         if      (isToday) cls += ' heute';
         else if (isBel)   cls += (' belegt' + (isArrival ? ' halb-an' : ''));
-        else if (!isPast) cls += (' frei' + (isDeparture ? ' halb-ab' : ''));
+        else if (!isPast) cls += (' frei' + (isDeparture ? ' halb-ab' : isPreBlock ? ' halb-vor' : ''));
         if (isPast && !isToday) cls += ' past';
         el.className = cls;
-        if ((isBel || isDeparture) && !isPast) el.style.setProperty('--accent', accentColor);
+        if ((isBel || isDeparture || isPreBlock) && !isPast) el.style.setProperty('--accent', accentColor);
         var nr = document.createElement('div');
         nr.className = 'kal-tag-nr';
         nr.textContent = d;
