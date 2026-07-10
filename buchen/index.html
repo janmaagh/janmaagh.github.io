@@ -476,7 +476,6 @@
             const [bookings, setBookings] = useState([]);
             const [ownBooked, setOwnBooked] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
             const [blockedEdges, setBlockedEdges] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
-            const [diagnoseText, setDiagnoseText] = useState('');
 
             // WICHTIG: date.toISOString() rechnet in UTC um — bei einem lokal um Mitternacht
             // erzeugten Date-Objekt (new Date(jahr, monat, tag)) verschiebt das in Zeitzonen
@@ -1079,6 +1078,10 @@
                                     ))}
                                 </div>
 
+                                <div style={{ fontSize: '13px', color: 'var(--licht-70)', marginBottom: '8px' }}>
+                                    Aktuell gewählt — Anreise: <strong>{formData.checkIn || '(keine)'}</strong>, Abreise: <strong>{formData.checkOut || '(keine)'}</strong>
+                                </div>
+
                                 <div className="calendar-days">
                                     {calendarDays.map((day, idx) => {
                                         if (!day) return <div key={`empty-${idx}`}></div>;
@@ -1114,18 +1117,7 @@
                                             <div
                                                 key={dateStr}
                                                 className={`calendar-day ${isSelected ? 'selected' : ''} ${inRange ? 'in-range' : ''} ${isBooked ? 'belegt' : ''} ${halbClass} ${isPast ? 'disabled' : ''} ${!isClickable ? 'disabled' : ''}`}
-                                                onClick={() => {
-                                                    if (isClickable) { handleDateClick(day); return; }
-                                                    setDiagnoseText('DIAGNOSE für ' + dateStr + ':\n'
-                                                        + 'isBooked: ' + isBooked + '\n'
-                                                        + 'prevBooked (' + prevStr + '): ' + prevBooked + '\n'
-                                                        + 'isArrival: ' + isArrival + '\n'
-                                                        + 'isPast: ' + isPast + '\n'
-                                                        + 'formData.checkIn: ' + formData.checkIn + '\n'
-                                                        + 'formData.checkOut: ' + formData.checkOut + '\n'
-                                                        + 'selectingCheckout: ' + selectingCheckout + '\n'
-                                                        + 'canSelectAsCheckout: ' + canSelectAsCheckout);
-                                                }}
+                                                onClick={() => isClickable && handleDateClick(day)}
                                             >
                                                 {day.getDate()}
                                             </div>
@@ -1133,11 +1125,6 @@
                                     })}
                                 </div>
                             </div>
-                            {diagnoseText && (
-                                <pre style={{ background: '#000', color: '#0f0', padding: '12px', fontSize: '13px', whiteSpace: 'pre-wrap', marginTop: '12px', borderRadius: '4px' }}>
-                                    {diagnoseText}
-                                </pre>
-                            )}
                         </div>
 
                         {/* Zusatzgebühren */}
