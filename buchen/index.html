@@ -1113,7 +1113,18 @@
                                             <div
                                                 key={dateStr}
                                                 className={`calendar-day ${isSelected ? 'selected' : ''} ${inRange ? 'in-range' : ''} ${isBooked ? 'belegt' : ''} ${halbClass} ${isPast ? 'disabled' : ''} ${!isClickable ? 'disabled' : ''}`}
-                                                onClick={() => isClickable && handleDateClick(day)}
+                                                onClick={() => {
+                                                    if (isClickable) { handleDateClick(day); return; }
+                                                    alert('DIAGNOSE für ' + dateStr + ':\n'
+                                                        + 'isBooked: ' + isBooked + '\n'
+                                                        + 'prevBooked (' + prevStr + '): ' + prevBooked + '\n'
+                                                        + 'isArrival: ' + isArrival + '\n'
+                                                        + 'isPast: ' + isPast + '\n'
+                                                        + 'formData.checkIn: ' + formData.checkIn + '\n'
+                                                        + 'formData.checkOut: ' + formData.checkOut + '\n'
+                                                        + 'selectingCheckout: ' + selectingCheckout + '\n'
+                                                        + 'canSelectAsCheckout: ' + canSelectAsCheckout);
+                                                }}
                                             >
                                                 {day.getDate()}
                                             </div>
