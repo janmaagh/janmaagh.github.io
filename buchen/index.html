@@ -477,6 +477,15 @@
             const [ownBooked, setOwnBooked] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
             const [blockedEdges, setBlockedEdges] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
 
+            // WICHTIG: date.toISOString() rechnet in UTC um — bei einem lokal um Mitternacht
+            // erzeugten Date-Objekt (new Date(jahr, monat, tag)) verschiebt das in Zeitzonen
+            // östlich von UTC (z.B. deutsche Sommerzeit) das Datum um einen Tag nach vorne.
+            // Diese Funktion liest Jahr/Monat/Tag stattdessen direkt lokal aus, ohne Umweg
+            // über UTC, und ist deshalb sicher für alle Kalender-Datum-Vergleiche.
+            function localDateStr(d) {
+                return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+            }
+
             function parseIcal(text) {
                 const tage = new Set();
                 const lines = text.replace(/\r/g, '').split('\n');
@@ -725,7 +734,7 @@
             };
 
             const isDateBooked = (date) => {
-                const dateStr = date.toISOString().split('T')[0];
+                const dateStr = localDateStr(date);
 
                 // 1. Eigene Buchungen/Blockierungen live aus der Datenbank
                 const ownSet = ownBooked[formData.wohnung];
@@ -740,7 +749,7 @@
 
             const isDateInRange = (date) => {
                 if (!formData.checkIn || !formData.checkOut) return false;
-                const current = new Date(date.toISOString().split('T')[0]);
+                const current = new Date(localDateStr(date));
                 const checkIn = new Date(formData.checkIn);
                 const checkOut = new Date(formData.checkOut);
                 return current > checkIn && current < checkOut;
@@ -766,8 +775,8 @@
             };
 
             const hasBookedDateInRange = (start, end) => {
-                const d = new Date(start);
-                const endDate = new Date(end);
+                const d = new Date(start + 'T00:00:00');
+                const endDate = new Date(end + 'T00:00:00');
                 while (d < endDate) {
                     if (isDateBooked(new Date(d))) return true;
                     d.setDate(d.getDate() + 1);
@@ -776,7 +785,7 @@
             };
 
             const handleDateClick = (date) => {
-                const dateStr = date.toISOString().split('T')[0];
+                const dateStr = localDateStr(date);
 
                 if (isDateBooked(date)) return;
 
@@ -1047,7 +1056,7 @@
                                 <div className="calendar-days">
                                     {calendarDays.map((day, idx) => {
                                         if (!day) return <div key={`empty-${idx}`}></div>;
-                                        const dateStr = day.toISOString().split('T')[0];
+                                        const dateStr = localDateStr(day);
                                         const isBooked = isDateBooked(day);
                                         const isSelected = dateStr === formData.checkIn || dateStr === formData.checkOut;
                                         const inRange = isDateInRange(day);
@@ -1055,7 +1064,7 @@
 
                                         const prevDate = new Date(day);
                                         prevDate.setDate(prevDate.getDate() - 1);
-                                        const prevStr = prevDate.toISOString().split('T')[0];
+                                        const prevStr = localDateStr(prevDate);
                                         const prevBooked = isDateBooked(prevDate);
                                         const edgeSet = blockedEdges[formData.wohnung];
                                         const isEdge = edgeSet && edgeSet.has(dateStr);
