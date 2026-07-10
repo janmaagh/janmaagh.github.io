@@ -1028,6 +1028,16 @@
                                     {airbnbSyncStatus === 'ok' && '✓ Airbnb-Belegung live synchronisiert'}
                                     {airbnbSyncStatus === 'error' && '⚠ Airbnb-Belegung konnte nicht geladen werden – nur manuelle Buchungen sichtbar'}
                                 </div>
+                                <details style={{ fontSize: '11px', color: 'var(--licht-40)', marginBottom: '12px' }}>
+                                    <summary style={{ cursor: 'pointer' }}>Debug: Rohdaten anzeigen</summary>
+                                    <div style={{ marginTop: '6px' }}>
+                                        Airbnb ({formData.wohnung}): {[...(airbnbBooked[formData.wohnung] || [])].sort().join(', ') || '(leer)'}
+                                        <br /><br />
+                                        Eigene DB ({formData.wohnung}): {[...(ownBooked[formData.wohnung] || [])].sort().join(', ') || '(leer)'}
+                                        <br /><br />
+                                        Heute (lokal berechnet): {localDateStr(new Date())}
+                                    </div>
+                                </details>
                                 <div className="availability-info">
                                     <div className="availability-item">
                                         <div className="availability-dot available"></div>
