@@ -787,7 +787,21 @@
             const handleDateClick = (date) => {
                 const dateStr = localDateStr(date);
 
-                if (isDateBooked(date)) return;
+                const isBookedNow = isDateBooked(date);
+                if (isBookedNow) {
+                    // Ausnahme: Wenn wir gerade das Abreisedatum wählen (Anreise ist schon
+                    // gesetzt) und dieser Tag NUR belegt ist, weil dort eine ANDERE Buchung
+                    // beginnt (Anreisetag), darf trotzdem fortgefahren werden — der eigene
+                    // Aufenthalt endet dann exklusiv genau an diesem Tag (Zimmerwechsel am
+                    // selben Tag ist ausdrücklich erwünscht).
+                    const prevDate = new Date(date);
+                    prevDate.setDate(prevDate.getDate() - 1);
+                    const isOthersArrivalDay = !isDateBooked(prevDate);
+                    const selectingCheckout = formData.checkIn && !formData.checkOut;
+                    if (!(selectingCheckout && isOthersArrivalDay && dateStr > formData.checkIn)) {
+                        return;
+                    }
+                }
 
                 if (!formData.checkIn) {
                     setFormData({ ...formData, checkIn: dateStr, checkOut: '' });
@@ -1085,11 +1099,20 @@
                                         const isPreBlock = !isBooked && isEdge && !isDeparture;
                                         const halbClass = isArrival ? 'halb-an' : isDeparture ? 'halb-ab' : isPreBlock ? 'halb-vor' : '';
 
+                                        // Selbst wenn ein Tag als "belegt" gilt, weil dort eine ANDERE Buchung
+                                        // beginnt (Anreisetag), darf er trotzdem als EIGENES Abreisedatum gewählt
+                                        // werden — der eigene Aufenthalt endet dann exklusiv genau an diesem Tag,
+                                        // ohne sich mit der neuen Buchung zu überschneiden (Zimmerwechsel am
+                                        // selben Tag ist bei uns ausdrücklich erwünscht).
+                                        const selectingCheckout = formData.checkIn && !formData.checkOut;
+                                        const canSelectAsCheckout = selectingCheckout && isArrival && dateStr > formData.checkIn;
+                                        const isClickable = (!isBooked || canSelectAsCheckout) && !isPast;
+
                                         return (
                                             <div
                                                 key={dateStr}
-                                                className={`calendar-day ${isSelected ? 'selected' : ''} ${inRange ? 'in-range' : ''} ${isBooked ? 'belegt' : ''} ${halbClass} ${isPast ? 'disabled' : ''} ${(isBooked && !isPast) ? 'disabled' : ''}`}
-                                                onClick={() => !isBooked && !isPast && handleDateClick(day)}
+                                                className={`calendar-day ${isSelected ? 'selected' : ''} ${inRange ? 'in-range' : ''} ${isBooked ? 'belegt' : ''} ${halbClass} ${isPast ? 'disabled' : ''} ${!isClickable ? 'disabled' : ''}`}
+                                                onClick={() => isClickable && handleDateClick(day)}
                                             >
                                                 {day.getDate()}
                                             </div>
