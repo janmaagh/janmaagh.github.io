@@ -778,10 +778,10 @@
                 const d = new Date(start + 'T00:00:00');
                 const endDate = new Date(end + 'T00:00:00');
                 while (d < endDate) {
-                    if (isDateBooked(new Date(d))) return true;
+                    if (isDateBooked(new Date(d))) return localDateStr(d);
                     d.setDate(d.getDate() + 1);
                 }
-                return false;
+                return null;
             };
 
             const handleDateClick = (date) => {
@@ -808,8 +808,9 @@
                     setError('');
                 } else if (!formData.checkOut) {
                     if (new Date(dateStr) > new Date(formData.checkIn)) {
-                        if (hasBookedDateInRange(formData.checkIn, dateStr)) {
-                            setError('Der gewählte Zeitraum enthält bereits belegte Tage. Bitte wähle einen anderen Zeitraum.');
+                        const conflictDate = hasBookedDateInRange(formData.checkIn, dateStr);
+                        if (conflictDate) {
+                            setError('Der gewählte Zeitraum enthält bereits einen belegten Tag: ' + conflictDate + '. Bitte wähle einen anderen Zeitraum.');
                             setFormData({ ...formData, checkIn: dateStr, checkOut: '' });
                             return;
                         }
