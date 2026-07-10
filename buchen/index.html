@@ -1119,7 +1119,7 @@
                                         // selben Tag ist bei uns ausdrücklich erwünscht).
                                         const selectingCheckout = formData.checkIn && !formData.checkOut;
                                         const canSelectAsCheckout = selectingCheckout && isArrival && dateStr > formData.checkIn;
-                                        const isClickable = (!isBooked || canSelectAsCheckout) && !isPast;
+                                        const isClickable = (!isBooked || canSelectAsCheckout || isSelected) && !isPast;
 
                                         return (
                                             <div
