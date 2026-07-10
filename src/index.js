@@ -746,7 +746,7 @@ function toIcsDate(dateStr) {
   return dateStr.replace(/-/g, '');
 }
 
-async function handleExportIcs(request, env, wohnungParam) {
+async function handleExportIcs(request, env, wohnungParam, includeBlocks) {
   const validWohnungen = ['wohnung1', 'wohnung2', 'both'];
   if (!validWohnungen.includes(wohnungParam)) {
     return new Response('Ungültiger Parameter "wohnung" (erwartet: wohnung1, wohnung2 oder both)', { status: 400 });
@@ -764,13 +764,15 @@ async function handleExportIcs(request, env, wohnungParam) {
     WHERE status IN ('awaiting_downpayment', 'confirmed', 'completed')
     AND ${wohnungFilter}
   `;
-  const blockedQuery = `SELECT id, check_in, check_out FROM blocked_periods WHERE ${wohnungFilter}`;
-
   const bookingsStmt = wohnungParam === 'both' ? env.DB.prepare(bookingsQuery) : env.DB.prepare(bookingsQuery).bind(wohnungParam);
-  const blockedStmt = wohnungParam === 'both' ? env.DB.prepare(blockedQuery) : env.DB.prepare(blockedQuery).bind(wohnungParam);
-
   const { results: bookingResults } = await bookingsStmt.all();
-  const { results: blockedResults } = await blockedStmt.all();
+
+  let blockedResults = [];
+  if (includeBlocks) {
+    const blockedQuery = `SELECT id, check_in, check_out FROM blocked_periods WHERE ${wohnungFilter}`;
+    const blockedStmt = wohnungParam === 'both' ? env.DB.prepare(blockedQuery) : env.DB.prepare(blockedQuery).bind(wohnungParam);
+    blockedResults = (await blockedStmt.all()).results;
+  }
 
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Greenhouse Market//Booking Export//DE\r\nCALSCALE:GREGORIAN\r\n';
   for (const b of bookingResults) {
@@ -789,16 +791,26 @@ async function handleExportIcs(request, env, wohnungParam) {
   }
 
   for (const b of blockedResults) {
-    ics += 'BEGIN:VEVENT\r\n';
-    ics += `UID:${b.id}@greenhouse-fuerstenberg.de\r\n`;
-    // Sowohl der erste (checkIn) als auch der letzte (checkOut) Tag einer manuellen
-    // Blockierung bleiben frei/verfügbar — nur die Tage dazwischen sind wirklich
-    // gesperrt. Deshalb startet der Block einen Tag NACH checkIn.
-    ics += `DTSTART;VALUE=DATE:${toIcsDate(addOneDay(b.check_in))}\r\n`;
-    ics += `DTEND;VALUE=DATE:${toIcsDate(b.check_out)}\r\n`;
-    ics += `SUMMARY:Blockiert\r\n`;
-    ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
-    ics += 'END:VEVENT\r\n';
+    // Statt EINES Termins über den ganzen Zeitraum wird für JEDEN einzelnen,
+    // wirklich betroffenen Tag (checkIn+1 bis checkOut-1) ein eigener,
+    // unmissverständlicher Ein-Tages-Termin erzeugt. Das lässt keinen
+    // Interpretationsspielraum mehr zu, wie genau Airbnb den Rand eines
+    // mehrtägigen Zeitraums behandelt (das hatte sich als unzuverlässig
+    // erwiesen) — ein einzelner Tag (DTSTART=X, DTEND=X+1) ist eindeutig.
+    let cur = addOneDay(b.check_in);
+    let dayIndex = 0;
+    while (cur < b.check_out) {
+      const next = addOneDay(cur);
+      ics += 'BEGIN:VEVENT\r\n';
+      ics += `UID:${b.id}-${dayIndex}@greenhouse-fuerstenberg.de\r\n`;
+      ics += `DTSTART;VALUE=DATE:${toIcsDate(cur)}\r\n`;
+      ics += `DTEND;VALUE=DATE:${toIcsDate(next)}\r\n`;
+      ics += `SUMMARY:Blockiert\r\n`;
+      ics += `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z\r\n`;
+      ics += 'END:VEVENT\r\n';
+      cur = next;
+      dayIndex++;
+    }
   }
   ics += 'END:VCALENDAR\r\n';
 
@@ -883,7 +895,8 @@ export default {
 
       if (path === '/export.ics') {
         const wohnung = url.searchParams.get('wohnung') || 'wohnung1';
-        return handleExportIcs(request, env, wohnung);
+        const includeBlocks = url.searchParams.get('includeBlocks') !== 'false';
+        return handleExportIcs(request, env, wohnung, includeBlocks);
       }
 
       if (path === '/api/retention/preview' && method === 'GET') return await handleRetentionPreview(request, env);
