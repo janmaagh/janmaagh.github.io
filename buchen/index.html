@@ -284,6 +284,14 @@
         .calendar-day.halb-vor {
             background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.32) 50%);
         }
+        .calendar-day.belegt.selected,
+        .calendar-day.halb-an.selected,
+        .calendar-day.halb-ab.selected,
+        .calendar-day.halb-vor.selected {
+            outline: 2px solid var(--accent);
+            outline-offset: -2px;
+            font-weight: 600;
+        }
 
         .calendar-day.other-month {
             color: #666;
