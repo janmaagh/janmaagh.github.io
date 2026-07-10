@@ -266,8 +266,23 @@
         .calendar-day.disabled {
             opacity: 0.3;
             cursor: not-allowed;
-            background: rgba(168, 87, 87, 0.1);
-            border-color: var(--bernstein);
+        }
+
+        .calendar-day.belegt {
+            background: rgba(180,70,55,.4);
+            color: rgba(232,224,208,.6);
+            border-color: rgba(180,70,55,.5);
+            opacity: 1;
+        }
+        .calendar-day.belegt.halb-an {
+            background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.4) 50%);
+            color: var(--licht-70);
+        }
+        .calendar-day.halb-ab {
+            background: linear-gradient(135deg, rgba(180,70,55,.32) 50%, transparent 50%);
+        }
+        .calendar-day.halb-vor {
+            background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.32) 50%);
         }
 
         .calendar-day.other-month {
@@ -459,14 +474,91 @@
             const [liveCancellationPolicy, setLiveCancellationPolicy] = useState(null);
 
             const [bookings, setBookings] = useState([]);
+            const [ownBooked, setOwnBooked] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
+            const [blockedEdges, setBlockedEdges] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
+
+            function parseIcal(text) {
+                const tage = new Set();
+                const lines = text.replace(/\r/g, '').split('\n');
+                let inEvent = false, dtstart = null, dtend = null;
+                lines.forEach((line) => {
+                    if (line === 'BEGIN:VEVENT') { inEvent = true; dtstart = null; dtend = null; }
+                    else if (line === 'END:VEVENT') {
+                        if (inEvent && dtstart && dtend) {
+                            const d = new Date(dtstart);
+                            while (d < dtend) {
+                                tage.add(d.toISOString().slice(0, 10));
+                                d.setDate(d.getDate() + 1);
+                            }
+                        }
+                        inEvent = false;
+                    } else if (inEvent) {
+                        let m;
+                        if ((m = line.match(/^DTSTART(?:;[^:]*)?:([0-9]{8})/))) {
+                            const v = m[1];
+                            dtstart = new Date(v.slice(0, 4) + '-' + v.slice(4, 6) + '-' + v.slice(6, 8));
+                        }
+                        if ((m = line.match(/^DTEND(?:;[^:]*)?:([0-9]{8})/))) {
+                            const v = m[1];
+                            dtend = new Date(v.slice(0, 4) + '-' + v.slice(4, 6) + '-' + v.slice(6, 8));
+                        }
+                    }
+                });
+                return tage;
+            }
             const [currentMonth, setCurrentMonth] = useState(new Date());
             const [submitted, setSubmitted] = useState(false);
             const [error, setError] = useState('');
             const [airbnbBooked, setAirbnbBooked] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
             const [airbnbSyncStatus, setAirbnbSyncStatus] = useState('loading'); // 'loading' | 'ok' | 'error'
 
-            // Load data from localStorage
+            // Buchungen und Blockierungen kommen jetzt live aus der Datenbank statt
+            // aus dem längst veralteten lokalen Speicher.
             useEffect(() => {
+                const wohnungen = ['wohnung1', 'wohnung2', 'both'];
+
+                const ownBookingsPromise = Promise.all(wohnungen.map(w =>
+                    fetch(`${API_BASE}/export.ics?wohnung=${w}&includeBlocks=false`)
+                        .then(r => r.ok ? r.text() : '')
+                        .then(text => text.indexOf('BEGIN:VCALENDAR') !== -1 ? parseIcal(text) : new Set())
+                        .catch(() => new Set())
+                ));
+
+                const blockedPromise = Promise.all(wohnungen.map(w =>
+                    fetch(`${API_BASE}/api/public-blocked-edges?wohnung=${w}`)
+                        .then(r => r.ok ? r.json() : [])
+                        .then(list => {
+                            const edges = new Set();
+                            const occupied = new Set();
+                            (list || []).forEach(bp => {
+                                edges.add(bp.checkIn);
+                                edges.add(bp.checkOut);
+                                let cur = new Date(bp.checkIn + 'T00:00:00Z');
+                                const end = new Date(bp.checkOut + 'T00:00:00Z');
+                                cur.setUTCDate(cur.getUTCDate() + 1);
+                                while (cur < end) {
+                                    occupied.add(cur.toISOString().split('T')[0]);
+                                    cur.setUTCDate(cur.getUTCDate() + 1);
+                                }
+                            });
+                            return { edges, occupied };
+                        })
+                        .catch(() => ({ edges: new Set(), occupied: new Set() }))
+                ));
+
+                Promise.all([ownBookingsPromise, blockedPromise]).then(([bookedSets, blockedResults]) => {
+                    setOwnBooked({
+                        wohnung1: new Set([...bookedSets[0], ...blockedResults[0].occupied]),
+                        wohnung2: new Set([...bookedSets[1], ...blockedResults[1].occupied]),
+                        both: new Set([...bookedSets[2], ...blockedResults[2].occupied]),
+                    });
+                    setBlockedEdges({
+                        wohnung1: blockedResults[0].edges,
+                        wohnung2: blockedResults[1].edges,
+                        both: blockedResults[2].edges,
+                    });
+                });
+
                 const savedBookings = localStorage.getItem('greenhouse_bookings');
                 if (savedBookings) {
                     try {
@@ -550,36 +642,6 @@
                     wohnung2: 'https://www.airbnb.de/calendar/ical/1638991508992594489.ics?t=77ed71be4f204892ab116d8ac12bc2c1',
                     both: 'https://www.airbnb.de/calendar/ical/1645697917802366310.ics?t=8a02f4a2fb38428d8dcdc2d39612ae43',
                 };
-
-                function parseIcal(text) {
-                    const tage = new Set();
-                    const lines = text.replace(/\r/g, '').split('\n');
-                    let inEvent = false, dtstart = null, dtend = null;
-                    lines.forEach((line) => {
-                        if (line === 'BEGIN:VEVENT') { inEvent = true; dtstart = null; dtend = null; }
-                        else if (line === 'END:VEVENT') {
-                            if (inEvent && dtstart && dtend) {
-                                const d = new Date(dtstart);
-                                while (d < dtend) {
-                                    tage.add(d.toISOString().slice(0, 10));
-                                    d.setDate(d.getDate() + 1);
-                                }
-                            }
-                            inEvent = false;
-                        } else if (inEvent) {
-                            let m;
-                            if ((m = line.match(/^DTSTART(?:;[^:]*)?:([0-9]{8})/))) {
-                                const v = m[1];
-                                dtstart = new Date(v.slice(0, 4) + '-' + v.slice(4, 6) + '-' + v.slice(6, 8));
-                            }
-                            if ((m = line.match(/^DTEND(?:;[^:]*)?:([0-9]{8})/))) {
-                                const v = m[1];
-                                dtend = new Date(v.slice(0, 4) + '-' + v.slice(4, 6) + '-' + v.slice(6, 8));
-                            }
-                        }
-                    });
-                    return tage;
-                }
 
                 async function loadAll() {
                     const entries = Object.entries(ICAL_MAP);
@@ -665,14 +727,9 @@
             const isDateBooked = (date) => {
                 const dateStr = date.toISOString().split('T')[0];
 
-                // 1. Manuell im System erfasste Buchungen
-                const localBooked = bookings.some(booking => {
-                    const checkIn = new Date(booking.checkIn);
-                    const checkOut = new Date(booking.checkOut);
-                    const current = new Date(dateStr);
-                    return current >= checkIn && current < checkOut && booking.wohnung === formData.wohnung;
-                });
-                if (localBooked) return true;
+                // 1. Eigene Buchungen/Blockierungen live aus der Datenbank
+                const ownSet = ownBooked[formData.wohnung];
+                if (ownSet && ownSet.has(dateStr)) return true;
 
                 // 2. Live von Airbnb synchronisierte Belegung für die gewählte Einheit
                 const airbnbSet = airbnbBooked[formData.wohnung];
@@ -996,10 +1053,23 @@
                                         const inRange = isDateInRange(day);
                                         const isPast = day < new Date() && day.toDateString() !== new Date().toDateString();
 
+                                        const prevDate = new Date(day);
+                                        prevDate.setDate(prevDate.getDate() - 1);
+                                        const prevStr = prevDate.toISOString().split('T')[0];
+                                        const prevBooked = isDateBooked(prevDate);
+                                        const edgeSet = blockedEdges[formData.wohnung];
+                                        const isEdge = edgeSet && edgeSet.has(dateStr);
+                                        const prevIsEdge = edgeSet && edgeSet.has(prevStr);
+
+                                        const isArrival = isBooked && !prevBooked && !prevIsEdge;
+                                        const isDeparture = !isBooked && prevBooked;
+                                        const isPreBlock = !isBooked && isEdge && !isDeparture;
+                                        const halbClass = isArrival ? 'halb-an' : isDeparture ? 'halb-ab' : isPreBlock ? 'halb-vor' : '';
+
                                         return (
                                             <div
                                                 key={dateStr}
-                                                className={`calendar-day ${isSelected ? 'selected' : ''} ${inRange ? 'in-range' : ''} ${isBooked || isPast ? 'disabled' : ''}`}
+                                                className={`calendar-day ${isSelected ? 'selected' : ''} ${inRange ? 'in-range' : ''} ${isBooked ? 'belegt' : ''} ${halbClass} ${isPast ? 'disabled' : ''} ${(isBooked && !isPast) ? 'disabled' : ''}`}
                                                 onClick={() => !isBooked && !isPast && handleDateClick(day)}
                                             >
                                                 {day.getDate()}
