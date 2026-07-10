@@ -1347,6 +1347,11 @@ footer{
     <a href="#kontakt">Gastgeber kontaktieren</a>
   </div>
 
+  <details style="font-size:11px;color:var(--licht-40);max-width:600px;margin:1rem auto">
+    <summary style="cursor:pointer">Debug: Rohdaten anzeigen</summary>
+    <div id="kal-debug-output" style="margin-top:6px">Lädt…</div>
+  </details>
+
   <script>
   (function() {
     var MONATE = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
@@ -1474,6 +1479,19 @@ footer{
           renderAll();
           var total = window.booked[0].size + window.booked[1].size + window.booked[2].size;
           setStatus(total > 0 ? '✓ Verfügbarkeit live — Stand heute' : '⚠ Kalender wird geladen…', total > 0);
+
+          var debugEl = document.getElementById('kal-debug-output');
+          if (debugEl) {
+            var labels = ['Beide Wohnungen (grid 0)', 'Wohnung 1 (grid 1)', 'Wohnung 2 (grid 2)'];
+            var html = '';
+            for (var gi = 0; gi < 3; gi++) {
+              var sorted = [...window.booked[gi]].sort();
+              html += '<div style="margin-bottom:8px"><strong>' + labels[gi] + ':</strong><br>' + (sorted.join(', ') || '(leer)') + '</div>';
+            }
+            var todayNow = new Date();
+            html += '<div>Heute (lokal berechnet): ' + ds(todayNow.getFullYear(), todayNow.getMonth(), todayNow.getDate()) + '</div>';
+            debugEl.innerHTML = html;
+          }
         }
       });
     });
