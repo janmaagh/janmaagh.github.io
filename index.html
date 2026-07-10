@@ -1552,9 +1552,9 @@ footer{
         var isPreBlock = !isBel && isEdge && !isDeparture;
 
         var cls = 'kal-tag';
-        if      (isToday) cls += ' heute';
-        else if (isBel)   cls += (' belegt' + (isArrival ? ' halb-an' : ''));
+        if (isBel)        cls += (' belegt' + (isArrival ? ' halb-an' : ''));
         else if (!isPast) cls += (' frei' + (isDeparture ? ' halb-ab' : isPreBlock ? ' halb-vor' : ''));
+        if (isToday) cls += ' heute';
         if (isPast && !isToday) cls += ' past';
         el.className = cls;
         if ((isBel || isDeparture || isPreBlock) && !isPast) el.style.setProperty('--accent', accentColor);
