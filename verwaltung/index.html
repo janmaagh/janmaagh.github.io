@@ -516,12 +516,18 @@
             color: rgba(232,224,208,.5);
             cursor: not-allowed !important;
         }
+        .blockcal-tag.belegt.halb-an {
+            background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.4) 50%);
+        }
         .blockcal-tag.ausgewaehlt {
             background: rgba(200,164,58,.4);
             color: var(--licht);
         }
-        .blockcal-tag.halb {
+        .blockcal-tag.halb-ab {
             background: linear-gradient(135deg, rgba(180,70,55,.35) 50%, transparent 50%);
+        }
+        .blockcal-tag.halb-vor {
+            background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.35) 50%);
         }
         .blockcal-tag:not(.leer):not(.past):not(.belegt):hover {
             background: rgba(255,255,255,.1);
@@ -536,7 +542,7 @@
         }
         .blockcal-legend-dot.belegt { background: rgba(180,70,55,.4); }
         .blockcal-legend-dot.ausgewaehlt { background: rgba(200,164,58,.4); }
-        .blockcal-legend-dot.halb { background: linear-gradient(135deg, transparent 50%, rgba(180,70,55,.35) 50%); }
+        .blockcal-legend-dot.halb { background: linear-gradient(135deg, rgba(180,70,55,.35) 50%, transparent 50%); }
     </style>
 </head>
 <body>
@@ -2107,22 +2113,44 @@ Deutschland`;
                     const isPast = dateStr < todayStr;
                     const isOccupied = isDateBookedForWohnung(dateStr, blockForm.wohnung);
                     const isInSelection = blockForm.checkIn && dateStr >= blockForm.checkIn && (blockForm.checkOut ? dateStr < blockForm.checkOut : dateStr === blockForm.checkIn);
-                    const isBlockEdge = blockedPeriods.some(bp => {
+
+                    const prevDateObj = new Date(year, month, d - 1);
+                    const prevDateStr = blockCalDs(prevDateObj.getFullYear(), prevDateObj.getMonth(), prevDateObj.getDate());
+                    const prevOccupied = isDateBookedForWohnung(prevDateStr, blockForm.wohnung);
+
+                    const isPreBlockEdge = blockedPeriods.some(bp => {
                         const affectsThisWohnung = bp.wohnung === blockForm.wohnung || bp.wohnung === 'both' || blockForm.wohnung === 'both';
-                        return affectsThisWohnung && (bp.checkIn === dateStr || bp.checkOut === dateStr);
+                        return affectsThisWohnung && bp.checkIn === dateStr;
                     });
+                    const isPostBlockEdge = blockedPeriods.some(bp => {
+                        const affectsThisWohnung = bp.wohnung === blockForm.wohnung || bp.wohnung === 'both' || blockForm.wohnung === 'both';
+                        return affectsThisWohnung && bp.checkOut === dateStr;
+                    });
+                    const prevIsPreBlockEdge = blockedPeriods.some(bp => {
+                        const affectsThisWohnung = bp.wohnung === blockForm.wohnung || bp.wohnung === 'both' || blockForm.wohnung === 'both';
+                        return affectsThisWohnung && bp.checkIn === prevDateStr;
+                    });
+
+                    // Anreisetag jeder echten Buchung: erster belegter Tag, gespiegelte Diagonale
+                    // (dasselbe Prinzip wie auf der Website und im Gäste-Tool).
+                    const isArrival = isOccupied && !prevOccupied && !prevIsPreBlockEdge;
+                    // Abreisetag: erster freier Tag direkt nach einer belegten Nacht.
+                    const isDeparture = !isOccupied && prevOccupied;
+
                     let cls = 'blockcal-tag';
                     if (isPast) cls += ' past';
-                    else if (isOccupied) cls += ' belegt';
+                    else if (isOccupied) cls += (' belegt' + (isArrival ? ' halb-an' : ''));
                     else if (isInSelection) cls += ' ausgewaehlt';
-                    else if (isBlockEdge) cls += ' halb';
+                    else if (isDeparture) cls += ' halb-ab';
+                    else if (isPreBlockEdge) cls += ' halb-vor';
+                    else if (isPostBlockEdge) cls += ' halb-ab';
                     cells.push(
                         <div
                             key={dateStr}
                             className={cls}
                             onClick={() => { if (!isPast) handleBlockCalDayClick(dateStr); }}
                             style={{ cursor: isPast ? 'default' : 'pointer' }}
-                            title={isBlockEdge && !isOccupied ? 'Randtag einer Blockierung — selbst noch verfügbar' : undefined}
+                            title={(isPreBlockEdge || isPostBlockEdge) && !isOccupied ? 'Randtag einer Blockierung — selbst noch verfügbar' : undefined}
                         >
                             {d}
                         </div>
