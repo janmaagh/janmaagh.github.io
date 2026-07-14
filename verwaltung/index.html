@@ -763,6 +763,7 @@
                 gross: row.gross,
                 notes: row.notes,
                 status: row.status,
+                createdAt: row.created_at || null,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
 
@@ -792,6 +793,7 @@
                 total: row.total,
                 nights: row.nights,
                 status: row.status,
+                createdAt: row.created_at || null,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
 
@@ -864,6 +866,13 @@
             });
             const [guests, setGuests] = useState([]);
             const [offers, setOffers] = useState([]);
+            const [offerNumberOverrides, setOfferNumberOverrides] = useState(() => {
+                try {
+                    return JSON.parse(localStorage.getItem('offerNumberOverrides') || '{}');
+                } catch (e) {
+                    return {};
+                }
+            });
             const [bookings, setBookings] = useState([]);
             const [blockedPeriods, setBlockedPeriods] = useState([]);
             const [showBlockForm, setShowBlockForm] = useState(false);
@@ -877,6 +886,7 @@
             const [showGuestForm, setShowGuestForm] = useState(false);
             const [showOfferForm, setShowOfferForm] = useState(false);
             const [showMailPreview, setShowMailPreview] = useState(null);
+            const [offerMailSubject, setOfferMailSubject] = useState('');
 
             const [cancellationPolicy, setCancellationPolicy] = useState(
                 `Stornobedingungen Greenhouse Market:
@@ -928,6 +938,9 @@
             const [quickGuestForm, setQuickGuestForm] = useState({ name: '', email: '', phone: '' });
             const [offerForm, setOfferForm] = useState({
                 guestId: '',
+                guestName: '',
+                guestEmail: '',
+                guestAddress: '',
                 wohnung: 'wohnung1',
                 checkIn: '',
                 checkOut: '',
@@ -940,14 +953,23 @@
                 projektSpace: false,
                 projektSpaceCleaning: false,
                 discountPercent: 0,
+                ignoreOccupancyCheck: false,
             });
             const [airbnbBooked, setAirbnbBooked] = useState({ wohnung1: new Set(), wohnung2: new Set(), both: new Set() });
             const [airbnbSyncStatus, setAirbnbSyncStatus] = useState('loading'); // 'loading' | 'ok' | 'error'
 
             // ---- Rechnungen ----
             const [invoices, setInvoices] = useState([]);
+            const [invoiceNumberOverrides, setInvoiceNumberOverrides] = useState(() => {
+                try {
+                    return JSON.parse(localStorage.getItem('invoiceNumberOverrides') || '{}');
+                } catch (e) {
+                    return {};
+                }
+            });
             const [showInvoiceForm, setShowInvoiceForm] = useState(false);
             const [showInvoiceMailPreview, setShowInvoiceMailPreview] = useState(null);
+            const [invoiceMailSubject, setInvoiceMailSubject] = useState('');
             const emptyInvoiceForm = {
                 sourceRef: '',
                 wohnung: 'wohnung1',
@@ -1395,6 +1417,9 @@
             const startEditOffer = (offer) => {
                 setOfferForm({
                     guestId: String(offer.guestId),
+                    guestName: offer.guest.name || '',
+                    guestEmail: offer.guest.email || '',
+                    guestAddress: offer.guest.address || '',
                     wohnung: offer.wohnung,
                     checkIn: offer.checkIn,
                     checkOut: offer.checkOut,
@@ -1407,6 +1432,7 @@
                     projektSpace: !!offer.projektSpace,
                     projektSpaceCleaning: !!offer.projektSpaceCleaning,
                     discountPercent: offer.discountPercent || 0,
+                    ignoreOccupancyCheck: false,
                 });
                 setEditingOfferId(offer.id);
                 setShowOfferForm(true);
@@ -1470,8 +1496,8 @@
                 }
                 if (!guest) return;
 
-                if (hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId)) {
-                    alert('Der gewählte Zeitraum ist für diese Wohnung bereits belegt (manuelle Buchung oder Airbnb). Bitte Datum oder Wohnung anpassen.');
+                if (!offerForm.ignoreOccupancyCheck && hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId)) {
+                    alert('Der gewählte Zeitraum ist für diese Wohnung bereits belegt (manuelle Buchung oder Airbnb). Bitte Datum oder Wohnung anpassen — oder weiter unten "Belegungsprüfung ignorieren" aktivieren, falls das Angebot trotzdem erstellt werden soll.');
                     return;
                 }
 
@@ -1482,10 +1508,10 @@
                 const payload = {
                     guestId: isRealGuestId ? parseInt(offerForm.guestId) : null,
                     sourceInquiryId: isRealGuestId ? null : offerForm.guestId,
-                    guestName: guest.name,
-                    guestEmail: guest.email,
+                    guestName: offerForm.guestName || guest.name,
+                    guestEmail: offerForm.guestEmail || guest.email,
                     guestPhone: guest.phone || '',
-                    guestAddress: guest.address || '',
+                    guestAddress: offerForm.guestAddress || guest.address || '',
                     wohnung: offerForm.wohnung,
                     checkIn: offerForm.checkIn,
                     checkOut: offerForm.checkOut,
@@ -1504,6 +1530,9 @@
 
                 const resetForm = () => setOfferForm({
                     guestId: '',
+                    guestName: '',
+                    guestEmail: '',
+                    guestAddress: '',
                     wohnung: 'wohnung1',
                     checkIn: '',
                     checkOut: '',
@@ -1516,6 +1545,7 @@
                     projektSpace: false,
                     projektSpaceCleaning: false,
                     discountPercent: 0,
+                    ignoreOccupancyCheck: false,
                 });
 
                 try {
@@ -1530,6 +1560,7 @@
                         resetForm();
                         setShowOfferForm(false);
                         setShowMailPreview(updatedOffer);
+                        setOfferMailSubject(`Angebot ${offerDisplayNumber(updatedOffer)} - Greenhouse Market`);
                     } else {
                         const created = await apiFetch('/api/offers', {
                             method: 'POST',
@@ -1540,6 +1571,7 @@
                         resetForm();
                         setShowOfferForm(false);
                         setShowMailPreview(newOffer);
+                        setOfferMailSubject(`Angebot ${offerDisplayNumber(newOffer)} - Greenhouse Market`);
                     }
                 } catch (err) {
                     alert('Angebot konnte nicht gespeichert werden: ' + err.message);
@@ -1646,7 +1678,7 @@ vielen Dank für Ihre Anfrage! Gerne erstellen wir Ihnen folgendes Angebot:
 🌱 GREENHOUSE MARKET – ANGEBOT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Angebotsnummer: ${offer.id}
+Angebotsnummer: ${offerDisplayNumber(offer)}
 Gültig bis: ${new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE')}
 
 UNTERKUNFT
@@ -1701,7 +1733,7 @@ Greenhouse Market GbR
 ${companyInfo.iban ? `IBAN: ${companyInfo.iban}` : 'IBAN: [Ihre IBAN hier eintragen]'}
 ${companyInfo.bic ? `BIC: ${companyInfo.bic}` : 'BIC: [Ihr BIC hier eintragen]'}
 
-Verwendungszweck: ${offer.id} - ${offer.guest.name}
+Verwendungszweck: ${offerDisplayNumber(offer)} - ${offer.guest.name}
 
 ${companyInfo.taxId ? `Steuernummer: ${companyInfo.taxId}` : ''}
 
@@ -1767,14 +1799,16 @@ Deutschland`;
                 const policyHtml = cancellationPolicy ? cancellationPolicy.split('\n').join('<br>') : '';
                 const nights = calculateNights(offer.checkIn, offer.checkOut);
 
-                const html = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Angebot ' + offer.id + '</title><style>'
+                const displayNumber = offerDisplayNumber(offer);
+                const html = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Angebot ' + displayNumber + '</title><style>'
                     + 'body{font-family:Arial,sans-serif;color:#1a1a1a;max-width:720px;margin:40px auto;font-size:14px;line-height:1.5;}'
                     + '.letterhead{display:flex;align-items:center;gap:20px;border-bottom:2px solid #6b9080;padding-bottom:16px;margin-bottom:32px;}'
                     + '.letterhead img{height:90px;width:auto;}'
                     + '.letterhead .addr{font-size:12px;color:#444;}'
                     + '.letterhead .addr strong{font-size:15px;color:#1a1a1a;display:block;margin-bottom:2px;}'
                     + 'h1{font-size:22px;letter-spacing:.05em;margin:0 0 24px;}'
-                    + '.meta-grid{display:flex;justify-content:space-between;margin-bottom:28px;}'
+                    + '.meta-grid{display:flex;justify-content:space-between;gap:24px;margin-bottom:28px;}'
+                    + '.meta-grid > div:first-child{max-width:55%;word-break:break-word;}'
                     + '.meta-grid div{font-size:13px;}'
                     + 'table{width:100%;border-collapse:collapse;margin-bottom:12px;}'
                     + 'th{text-align:left;border-bottom:1px solid #999;padding:6px 4px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#555;}'
@@ -1788,7 +1822,7 @@ Deutschland`;
                     + '</style></head><body>'
                     + '<div class="letterhead"><img src="' + LOGO_DATA_URI + '" alt="Greenhouse Market GbR" />'
                     + '<div class="addr"><strong>Greenhouse Market GbR</strong>Brandenburger Straße 17 · 16798 Fürstenberg/Havel<br>E-Mail: Greenhousemarket@proton.me</div></div>'
-                    + '<h1>ANGEBOT ' + offer.id + '</h1>'
+                    + '<h1>ANGEBOT ' + displayNumber + '</h1>'
                     + '<div class="meta-grid"><div><strong>Für:</strong><br>' + offer.guest.name + '<br>' + offer.guest.email + '</div>'
                     + '<div style="text-align:right">Angebotsdatum: ' + new Date().toLocaleDateString('de-DE') + '<br>'
                     + 'Gültig bis: ' + new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE') + '<br>'
@@ -1806,7 +1840,7 @@ Deutschland`;
                     + '<p>Greenhouse Market GbR<br>'
                     + 'IBAN: ' + (companyInfo.iban || '[bitte in den Einstellungen eintragen]') + '<br>'
                     + 'BIC: ' + (companyInfo.bic || '[bitte in den Einstellungen eintragen]') + '<br>'
-                    + 'Verwendungszweck: ' + offer.id + ' - ' + offer.guest.name + '</p>'
+                    + 'Verwendungszweck: ' + displayNumber + ' - ' + offer.guest.name + '</p>'
                     + '<p style="font-size:11px;color:#666;margin-top:24px"><strong>Stornobedingungen</strong>:<br>' + policyHtml + '<br><br>Aktuelle Kaution: ' + prices.deposit + '€ (wird nach Checkout zurückerstattet, sofern keine Schäden vorliegen)</p>'
                     + '<div class="footer">Greenhouse Market GbR · Lucia Hets &amp; Jan Chai Maagh · Brandenburger Straße 17 · 16798 Fürstenberg/Havel · Deutschland<br>'
                     + (companyInfo.taxId ? ('USt-IdNr. gem. § 27a UStG: ' + companyInfo.taxId) : '')
@@ -1862,7 +1896,8 @@ Deutschland`;
 
                 doc.setFont('helvetica', 'bold');
                 doc.setFontSize(16);
-                doc.text(`ANGEBOT ${offer.id}`, marginLeft, y);
+                const offerDisplayNr = offerDisplayNumber(offer);
+                doc.text(`ANGEBOT ${offerDisplayNr}`, marginLeft, y);
                 y += 12;
 
                 const nights = calculateNights(offer.checkIn, offer.checkOut);
@@ -1870,15 +1905,28 @@ Deutschland`;
                 doc.setFontSize(10);
                 doc.text('Für:', marginLeft, y);
                 doc.setFont('helvetica', 'normal');
-                doc.text(offer.guest.name, marginLeft, y + 5);
-                doc.text(offer.guest.email, marginLeft, y + 10);
+                // Feste Spaltenbreite für den Empfänger, damit ein langer Name/E-Mail
+                // automatisch umgebrochen wird statt in die rechte Meta-Spalte
+                // (Angebotsdatum/Gültig bis/Zeitraum) hineinzulaufen.
+                const offerRecipientMaxWidth = contentWidth * 0.55;
+                let offerRecipientY = y + 5;
+                const offerNameLines = doc.splitTextToSize(offer.guest.name || '', offerRecipientMaxWidth);
+                doc.text(offerNameLines, marginLeft, offerRecipientY);
+                offerRecipientY += offerNameLines.length * 5;
+                const offerEmailLines = doc.splitTextToSize(offer.guest.email || '', offerRecipientMaxWidth);
+                doc.text(offerEmailLines, marginLeft, offerRecipientY);
+                offerRecipientY += offerEmailLines.length * 5;
 
                 doc.setFontSize(9);
-                doc.text(`Angebotsdatum: ${new Date().toLocaleDateString('de-DE')}`, pageWidth - marginRight, y, { align: 'right' });
-                doc.text(`Gültig bis: ${new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE')}`, pageWidth - marginRight, y + 5, { align: 'right' });
-                doc.text(`Zeitraum: ${offer.checkIn} – ${offer.checkOut} (${nights} Nächte)`, pageWidth - marginRight, y + 10, { align: 'right' });
+                let offerMetaY = y;
+                doc.text(`Angebotsdatum: ${new Date().toLocaleDateString('de-DE')}`, pageWidth - marginRight, offerMetaY, { align: 'right' });
+                offerMetaY += 5;
+                doc.text(`Gültig bis: ${new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE')}`, pageWidth - marginRight, offerMetaY, { align: 'right' });
+                offerMetaY += 5;
+                doc.text(`Zeitraum: ${offer.checkIn} – ${offer.checkOut} (${nights} Nächte)`, pageWidth - marginRight, offerMetaY, { align: 'right' });
+                offerMetaY += 5;
 
-                y += 22;
+                y = Math.max(offerRecipientY, offerMetaY) + 12;
 
                 doc.setFont('helvetica', 'bold');
                 doc.setFontSize(9);
@@ -1955,7 +2003,7 @@ Deutschland`;
                 y += 5;
                 doc.text(companyInfo.bic ? `BIC: ${companyInfo.bic}` : 'BIC: [bitte in den Einstellungen eintragen]', marginLeft, y);
                 y += 5;
-                doc.text(`Verwendungszweck: ${offer.id} - ${offer.guest.name}`, marginLeft, y);
+                doc.text(`Verwendungszweck: ${offerDisplayNr} - ${offer.guest.name}`, marginLeft, y);
                 y += 10;
 
                 doc.setFontSize(8);
@@ -1981,7 +2029,7 @@ Deutschland`;
                 return doc;
             };
 
-            const sendOfferWithAttachment = async (offer) => {
+            const sendOfferWithAttachment = async (offer, subject) => {
                 let doc;
                 try {
                     doc = buildOfferPdf(offer);
@@ -1990,7 +2038,8 @@ Deutschland`;
                     alert('Die PDF-Erstellung ist fehlgeschlagen: ' + (e && e.message ? e.message : e) + '\n\nMögliche Ursache: Die PDF-Bibliothek (jsPDF) konnte nicht geladen werden — prüfe deine Internetverbindung bzw. ob ein Werbeblocker/Firewall die Datei von unpkg.com blockiert.');
                     return;
                 }
-                const fileName = `Angebot-${offer.id}.pdf`;
+                const offerNr = offerDisplayNumber(offer);
+                const fileName = `Angebot-${offerNr}.pdf`;
                 const blob = doc.output('blob');
 
                 let file = null;
@@ -2000,14 +2049,14 @@ Deutschland`;
                     file = null;
                 }
 
-                const mailSubject = `Angebot ${offer.id} - Greenhouse Market`;
+                const mailSubject = subject || `Angebot ${offerNr} - Greenhouse Market`;
 
                 if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
                     try {
                         await navigator.share({
                             files: [file],
                             title: mailSubject,
-                            text: `Anbei Ihr Angebot ${offer.id} für den Aufenthalt im Greenhouse.`,
+                            text: `Anbei Ihr Angebot ${offerNr} für den Aufenthalt im Greenhouse.`,
                         });
                         return;
                     } catch (e) {
@@ -2016,6 +2065,10 @@ Deutschland`;
                     }
                 }
 
+                // Datei-Anhang wird nicht unterstützt (z. B. Browser/App ohne Web-Share-Level-2).
+                // Wir laden die PDF trotzdem herunter, damit sie in jedem Fall verfügbar ist,
+                // und bieten danach zusätzlich einen reinen Text-Share an (funktioniert auf den
+                // meisten Smartphones auch ohne Datei-Unterstützung, z. B. für WhatsApp/Signal).
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -2025,9 +2078,36 @@ Deutschland`;
                 document.body.removeChild(a);
                 setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-                alert(`„${fileName}“ wurde heruntergeladen.\n\nDein Browser kann Anhänge nicht automatisch an eine E-Mail übergeben (Sicherheitsbeschränkung). Gleich öffnet sich dein Mail-Programm vorbereitet — bitte ziehe die heruntergeladene Datei per Drag & Drop dort hinein, bevor du sendest.`);
+                const mailBody = generateMailContent(offer);
 
-                window.location.href = `mailto:${offer.guest.email}?subject=${encodeURIComponent(mailSubject)}`;
+                if (navigator.share) {
+                    try {
+                        await navigator.share({
+                            title: mailSubject,
+                            text: `${mailBody}\n\n(Die PDF „${fileName}“ wurde separat heruntergeladen — bitte im Chat/der Mail manuell anhängen.)`,
+                        });
+                        return;
+                    } catch (e) {
+                        if (e && e.name === 'AbortError') return;
+                        console.warn('Text-Teilen fehlgeschlagen, Fallback auf Mail-App:', e);
+                    }
+                }
+
+                alert(`„${fileName}“ wurde heruntergeladen.\n\nDein Browser/deine App kann Anhänge nicht automatisch übergeben (Sicherheitsbeschränkung). Gleich öffnet sich dein Mail-Programm vorbereitet — bitte ziehe die heruntergeladene Datei per Drag & Drop dort hinein, bevor du sendest.`);
+
+                window.location.href = `mailto:${offer.guest.email}?subject=${encodeURIComponent(mailSubject)}&body=${encodeURIComponent(mailBody)}`;
+            };
+
+            // Öffnet die Angebots-Mail-Vorschau und setzt einen editierbaren Standard-Betreff
+            // (Bug-Fix: Betreff war zuvor fest verdrahtet und nicht änderbar).
+            const openOfferMailPreview = (offer) => {
+                setOfferMailSubject(`Angebot ${offerDisplayNumber(offer)} - Greenhouse Market`);
+                setShowMailPreview(offer);
+            };
+
+            const openInvoiceMailPreview = (invoice) => {
+                setInvoiceMailSubject(`Rechnung ${invoiceDisplayNumber(invoice)} - Greenhouse Market`);
+                setShowInvoiceMailPreview(invoice);
             };
 
             const copyToClipboard = (text) => {
@@ -2212,7 +2292,68 @@ Deutschland`;
                 return isNaN(n) ? 0 : n;
             };
 
-            const nextInvoiceNumber = () => `RE-${new Date().getFullYear()}-${String(invoices.length + 1).padStart(4, '0')}`;
+            // Fortlaufende, für Menschen lesbare Anzeige-Nummern (RE-2026-0001 / AN-2026-0001).
+            // Die interne Datenbank-ID (offer.id / invoice.id) bleibt für API-Aufrufe,
+            // React-Keys usw. unverändert erhalten — nur die ANZEIGE (Titel, PDF, Mail,
+            // Verwendungszweck) verwendet diese fortlaufende Nummer, damit sie garantiert
+            // bei 1 beginnt und nicht durch die rohen (teils 3- bis 9-stelligen) DB-IDs
+            // "springt". Die Reihenfolge richtet sich nach der DB-ID (= Erstellungsreihenfolge).
+            //
+            // Zusätzlich: Jede Nummer kann manuell überschrieben werden (z. B. um eine
+            // bestehende Nummernfolge fortzusetzen oder Lücken zu vermeiden). Die
+            // Überschreibung wird in diesem Browser gespeichert (localStorage) — sie ist
+            // also aktuell GERÄTEGEBUNDEN und wird nicht automatisch mit anderen Geräten/
+            // Personen (z. B. Jan) synchronisiert. Für eine geräteübergreifende Speicherung
+            // müsste das Feld im Backend (Datenbank) ergänzt werden.
+            const invoiceDisplayNumber = (invoice) => {
+                if (!invoice) return '';
+                if (invoiceNumberOverrides[invoice.id]) return invoiceNumberOverrides[invoice.id];
+                const sorted = [...invoices].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                const idx = sorted.findIndex(i => i.id === invoice.id);
+                const seq = idx >= 0 ? idx + 1 : sorted.length + 1;
+                const year = invoice.invoiceDate ? new Date(invoice.invoiceDate).getFullYear() : new Date().getFullYear();
+                return `RE-${year}-${String(seq).padStart(4, '0')}`;
+            };
+
+            const offerDisplayNumber = (offer) => {
+                if (!offer) return '';
+                if (offerNumberOverrides[offer.id]) return offerNumberOverrides[offer.id];
+                const sorted = [...offers].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                const idx = sorted.findIndex(o => o.id === offer.id);
+                const seq = idx >= 0 ? idx + 1 : sorted.length + 1;
+                let year = new Date().getFullYear();
+                if (offer.created) {
+                    const parts = offer.created.split('.');
+                    if (parts.length === 3 && parseInt(parts[2], 10)) year = parseInt(parts[2], 10);
+                }
+                return `AN-${year}-${String(seq).padStart(4, '0')}`;
+            };
+
+            const setOfferNumberOverride = (offerId, value) => {
+                setOfferNumberOverrides(prev => {
+                    const next = { ...prev };
+                    if (value && value.trim()) {
+                        next[offerId] = value.trim();
+                    } else {
+                        delete next[offerId];
+                    }
+                    localStorage.setItem('offerNumberOverrides', JSON.stringify(next));
+                    return next;
+                });
+            };
+
+            const setInvoiceNumberOverride = (invoiceId, value) => {
+                setInvoiceNumberOverrides(prev => {
+                    const next = { ...prev };
+                    if (value && value.trim()) {
+                        next[invoiceId] = value.trim();
+                    } else {
+                        delete next[invoiceId];
+                    }
+                    localStorage.setItem('invoiceNumberOverrides', JSON.stringify(next));
+                    return next;
+                });
+            };
 
             const calcInvoiceNet = (items) => items.reduce((sum, it) => sum + (parseFloat(it.quantity) || 0) * (parseFloat(it.unitPrice) || 0), 0);
 
@@ -2456,6 +2597,40 @@ Deutschland`;
                         projektSpace: !!inquiry.projektSpace,
                         items: buildInvoiceItemsFromParams(params),
                     });
+                } else if (type === 'offer') {
+                    const offer = offers.find(o => String(o.id) === id);
+                    if (!offer) return;
+                    const params = {
+                        wohnung: offer.wohnung,
+                        serviceStart: offer.checkIn,
+                        serviceEnd: offer.checkOut,
+                        persons: offer.persons,
+                        earlyCheckin: offer.earlyCheckin,
+                        lateCheckout: offer.lateCheckout,
+                        finalCleaning: offer.finalCleaning,
+                        dogFee: offer.dogFee,
+                        dogCount: offer.dogCount,
+                        projektSpace: offer.projektSpace,
+                    };
+                    setInvoiceForm({
+                        ...invoiceForm,
+                        sourceRef: value,
+                        wohnung: offer.wohnung,
+                        guestName: offer.guest.name,
+                        guestEmail: offer.guest.email,
+                        guestAddress: offer.guest.address || invoiceForm.guestAddress,
+                        serviceStart: offer.checkIn,
+                        serviceEnd: offer.checkOut,
+                        persons: offer.persons || 1,
+                        earlyCheckin: !!offer.earlyCheckin,
+                        lateCheckout: !!offer.lateCheckout,
+                        finalCleaning: !!offer.finalCleaning,
+                        dogFee: !!offer.dogFee,
+                        dogCount: offer.dogCount || 1,
+                        projektSpace: !!offer.projektSpace,
+                        discountPercent: offer.discountPercent || 0,
+                        items: buildInvoiceItemsFromParams(params),
+                    });
                 } else if (type === 'guest') {
                     const guest = guests.find(g => String(g.id) === id);
                     if (!guest) return;
@@ -2495,6 +2670,7 @@ Deutschland`;
                         setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
                         setShowInvoiceForm(false);
                         setShowInvoiceMailPreview(updatedInvoice);
+                        setInvoiceMailSubject(`Rechnung ${invoiceDisplayNumber(updatedInvoice)} - Greenhouse Market`);
                     } else {
                         const created = await apiFetch('/api/invoices', {
                             method: 'POST',
@@ -2505,6 +2681,7 @@ Deutschland`;
                         setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
                         setShowInvoiceForm(false);
                         setShowInvoiceMailPreview(newInvoice);
+                        setInvoiceMailSubject(`Rechnung ${invoiceDisplayNumber(newInvoice)} - Greenhouse Market`);
                     }
                 } catch (err) {
                     alert('Rechnung konnte nicht gespeichert werden: ' + err.message);
@@ -2538,7 +2715,7 @@ Deutschland`;
 anbei erhalten Sie die Rechnung für Ihren Aufenthalt im Greenhouse.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RECHNUNG ${invoice.id}
+RECHNUNG ${invoiceDisplayNumber(invoice)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Rechnungsdatum: ${new Date(invoice.invoiceDate).toLocaleDateString('de-DE')}
@@ -2578,7 +2755,7 @@ Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes
 Greenhouse Market GbR
 ${companyInfo.iban ? `IBAN: ${companyInfo.iban}` : 'IBAN: [Ihre IBAN hier eintragen]'}
 ${companyInfo.bic ? `BIC: ${companyInfo.bic}` : 'BIC: [Ihr BIC hier eintragen]'}
-Verwendungszweck: ${invoice.id}
+Verwendungszweck: ${invoiceDisplayNumber(invoice)}
 `;
                 if (invoice.notes) content += `\n${invoice.notes}\n`;
                 content += `
@@ -2621,14 +2798,16 @@ Deutschland
                 const notesHtml = invoice.notes ? invoice.notes.split('\n').join('<br>') : '';
                 const policyHtml = cancellationPolicy ? cancellationPolicy.split('\n').join('<br>') : '';
 
-                const html = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Rechnung ' + invoice.id + '</title><style>'
+                const invDisplayNumber = invoiceDisplayNumber(invoice);
+                const html = '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><title>Rechnung ' + invDisplayNumber + '</title><style>'
                     + 'body{font-family:Arial,sans-serif;color:#1a1a1a;max-width:720px;margin:40px auto;font-size:14px;line-height:1.5;}'
                     + '.letterhead{display:flex;align-items:center;gap:20px;border-bottom:2px solid #6b9080;padding-bottom:16px;margin-bottom:32px;}'
                     + '.letterhead img{height:90px;width:auto;}'
                     + '.letterhead .addr{font-size:12px;color:#444;}'
                     + '.letterhead .addr strong{font-size:15px;color:#1a1a1a;display:block;margin-bottom:2px;}'
                     + 'h1{font-size:22px;letter-spacing:.05em;margin:0 0 24px;}'
-                    + '.meta-grid{display:flex;justify-content:space-between;margin-bottom:28px;}'
+                    + '.meta-grid{display:flex;justify-content:space-between;gap:24px;margin-bottom:28px;}'
+                    + '.meta-grid > div:first-child{max-width:55%;word-break:break-word;}'
                     + '.meta-grid div{font-size:13px;}'
                     + 'table{width:100%;border-collapse:collapse;margin-bottom:12px;}'
                     + 'th{text-align:left;border-bottom:1px solid #999;padding:6px 4px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:#555;}'
@@ -2642,7 +2821,7 @@ Deutschland
                     + '</style></head><body>'
                     + '<div class="letterhead"><img src="' + LOGO_DATA_URI + '" alt="Greenhouse Market GbR" />'
                     + '<div class="addr"><strong>Greenhouse Market GbR</strong>Brandenburger Straße 17 · 16798 Fürstenberg/Havel<br>E-Mail: Greenhousemarket@proton.me</div></div>'
-                    + '<h1>RECHNUNG ' + invoice.id + '</h1>'
+                    + '<h1>RECHNUNG ' + invDisplayNumber + '</h1>'
                     + '<div class="meta-grid"><div><strong>Rechnungsempfänger:</strong><br>' + invoice.guestName + '<br>' + addressHtml + invoice.guestEmail + '</div>'
                     + '<div style="text-align:right">Rechnungsdatum: ' + new Date(invoice.invoiceDate).toLocaleDateString('de-DE') + '<br>'
                     + (invoice.serviceStart && invoice.serviceEnd ? ('Leistungszeitraum: ' + invoice.serviceStart + ' – ' + invoice.serviceEnd + '<br>') : '')
@@ -2662,7 +2841,7 @@ Deutschland
                     + '<p>Greenhouse Market GbR<br>'
                     + 'IBAN: ' + (companyInfo.iban || '[bitte in den Einstellungen eintragen]') + '<br>'
                     + 'BIC: ' + (companyInfo.bic || '[bitte in den Einstellungen eintragen]') + '<br>'
-                    + 'Verwendungszweck: ' + invoice.id + '</p>'
+                    + 'Verwendungszweck: ' + invDisplayNumber + '</p>'
                     + '<p style="font-size:11px;color:#666;margin-top:24px"><strong>Stornobedingungen</strong> (zur Erinnerung — bereits bei der Buchungsanfrage akzeptiert):<br>' + policyHtml + '<br><br>Aktuelle Kaution: ' + prices.deposit + '€ (wird nach Checkout zurückerstattet, sofern keine Schäden vorliegen)</p>'
                     + '<div class="footer">Greenhouse Market GbR · Lucia Hets &amp; Jan Chai Maagh · Brandenburger Straße 17 · 16798 Fürstenberg/Havel · Deutschland<br>'
                     + (companyInfo.taxId ? ('USt-IdNr. gem. § 27a UStG: ' + companyInfo.taxId) : '')
@@ -2721,7 +2900,8 @@ Deutschland
                 // Titel
                 doc.setFont('helvetica', 'bold');
                 doc.setFontSize(16);
-                doc.text(`RECHNUNG ${invoice.id}`, marginLeft, y);
+                const invoiceDisplayNr = invoiceDisplayNumber(invoice);
+                doc.text(`RECHNUNG ${invoiceDisplayNr}`, marginLeft, y);
                 y += 12;
 
                 // Empfänger links, Meta rechts
@@ -2729,16 +2909,23 @@ Deutschland
                 doc.setFontSize(10);
                 doc.text('Rechnungsempfänger:', marginLeft, y);
                 doc.setFont('helvetica', 'normal');
+                // Feste Spaltenbreite für den Empfänger, damit lange Namen/Adressen
+                // automatisch umgebrochen werden statt in die rechte Meta-Spalte
+                // (Rechnungsdatum/Leistungszeitraum) hineinzulaufen.
+                const recipientMaxWidth = contentWidth * 0.55;
                 let recipientY = y + 5;
-                doc.text(invoice.guestName, marginLeft, recipientY);
-                recipientY += 5;
+                const nameLines = doc.splitTextToSize(invoice.guestName || '', recipientMaxWidth);
+                doc.text(nameLines, marginLeft, recipientY);
+                recipientY += nameLines.length * 5;
                 (invoice.guestAddress || '').split('\n').forEach(line => {
                     if (!line) return;
-                    doc.text(line, marginLeft, recipientY);
-                    recipientY += 5;
+                    const addrLines = doc.splitTextToSize(line, recipientMaxWidth);
+                    doc.text(addrLines, marginLeft, recipientY);
+                    recipientY += addrLines.length * 5;
                 });
-                doc.text(invoice.guestEmail, marginLeft, recipientY);
-                recipientY += 5;
+                const emailLines = doc.splitTextToSize(invoice.guestEmail || '', recipientMaxWidth);
+                doc.text(emailLines, marginLeft, recipientY);
+                recipientY += emailLines.length * 5;
 
                 doc.setFontSize(9);
                 let metaY = y;
@@ -2834,7 +3021,7 @@ Deutschland
                 y += 5;
                 doc.text(companyInfo.bic ? `BIC: ${companyInfo.bic}` : 'BIC: [bitte in den Einstellungen eintragen]', marginLeft, y);
                 y += 5;
-                doc.text(`Verwendungszweck: ${invoice.id}`, marginLeft, y);
+                doc.text(`Verwendungszweck: ${invoiceDisplayNr}`, marginLeft, y);
                 y += 10;
 
                 doc.setFontSize(8);
@@ -2867,7 +3054,7 @@ Deutschland
             // Smartphones/Tablets und in aktuellem Chrome/Edge auf dem Desktop).
             // Wo das nicht unterstützt wird, laden wir die PDF herunter und öffnen den
             // Mail-Client vorbereitet — der Anhang muss dann einmal per Hand gezogen werden.
-            const sendInvoiceWithAttachment = async (invoice) => {
+            const sendInvoiceWithAttachment = async (invoice, subject) => {
                 let doc;
                 try {
                     doc = buildInvoicePdf(invoice);
@@ -2876,7 +3063,8 @@ Deutschland
                     alert('Die PDF-Erstellung ist fehlgeschlagen: ' + (e && e.message ? e.message : e) + '\n\nMögliche Ursache: Die PDF-Bibliothek (jsPDF) konnte nicht geladen werden — prüfe deine Internetverbindung bzw. ob ein Werbeblocker/Firewall die Datei von unpkg.com blockiert.');
                     return;
                 }
-                const fileName = `Rechnung-${invoice.id}.pdf`;
+                const invNr = invoiceDisplayNumber(invoice);
+                const fileName = `Rechnung-${invNr}.pdf`;
                 const blob = doc.output('blob');
 
                 let file = null;
@@ -2886,14 +3074,14 @@ Deutschland
                     file = null;
                 }
 
-                const mailSubject = `Rechnung ${invoice.id} - Greenhouse Market`;
+                const mailSubject = subject || `Rechnung ${invNr} - Greenhouse Market`;
 
                 if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
                     try {
                         await navigator.share({
                             files: [file],
                             title: mailSubject,
-                            text: `Anbei die Rechnung ${invoice.id} für Ihren Aufenthalt im Greenhouse.`,
+                            text: `Anbei die Rechnung ${invNr} für Ihren Aufenthalt im Greenhouse.`,
                         });
                         return;
                     } catch (e) {
@@ -2902,7 +3090,10 @@ Deutschland
                     }
                 }
 
-                // Fallback: PDF herunterladen + Mail-Client mit Betreff/Empfänger vorbereiten
+                // Datei-Anhang wird nicht unterstützt (z. B. Browser/App ohne Web-Share-Level-2).
+                // Wir laden die PDF trotzdem herunter, damit sie in jedem Fall verfügbar ist,
+                // und bieten danach zusätzlich einen reinen Text-Share an (funktioniert auf den
+                // meisten Smartphones auch ohne Datei-Unterstützung, z. B. für WhatsApp/Signal).
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -2912,9 +3103,24 @@ Deutschland
                 document.body.removeChild(a);
                 setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-                alert(`„${fileName}“ wurde heruntergeladen.\n\nDein Browser kann Anhänge nicht automatisch an eine E-Mail übergeben (Sicherheitsbeschränkung). Gleich öffnet sich dein Mail-Programm vorbereitet — bitte ziehe die heruntergeladene Datei per Drag & Drop dort hinein, bevor du sendest.`);
+                const mailBody = generateInvoiceMailContent(invoice);
 
-                window.location.href = `mailto:${invoice.guestEmail}?subject=${encodeURIComponent(mailSubject)}`;
+                if (navigator.share) {
+                    try {
+                        await navigator.share({
+                            title: mailSubject,
+                            text: `${mailBody}\n\n(Die PDF „${fileName}“ wurde separat heruntergeladen — bitte im Chat/der Mail manuell anhängen.)`,
+                        });
+                        return;
+                    } catch (e) {
+                        if (e && e.name === 'AbortError') return;
+                        console.warn('Text-Teilen fehlgeschlagen, Fallback auf Mail-App:', e);
+                    }
+                }
+
+                alert(`„${fileName}“ wurde heruntergeladen.\n\nDein Browser/deine App kann Anhänge nicht automatisch übergeben (Sicherheitsbeschränkung). Gleich öffnet sich dein Mail-Programm vorbereitet — bitte ziehe die heruntergeladene Datei per Drag & Drop dort hinein, bevor du sendest.`);
+
+                window.location.href = `mailto:${invoice.guestEmail}?subject=${encodeURIComponent(mailSubject)}&body=${encodeURIComponent(mailBody)}`;
             };
 
 
@@ -3326,7 +3532,7 @@ Deutschland
                                             const matchingOffer = offers.find(o => o.sourceInquiryId === inquiry.id);
                                             return matchingOffer ? (
                                                 <React.Fragment>
-                                                    <button className="secondary" onClick={() => setShowMailPreview(matchingOffer)}>📧 Angebot: Mail anzeigen</button>
+                                                    <button className="secondary" onClick={() => openOfferMailPreview(matchingOffer)}>📧 Angebot: Mail anzeigen</button>
                                                     <button className="secondary" onClick={() => printOffer(matchingOffer)}>🖨️ Angebot: Drucken/PDF</button>
                                                     <button onClick={() => sendOfferWithAttachment(matchingOffer)}>📎 Angebot: PDF senden</button>
                                                     <button className="danger" onClick={() => undoAcceptInquiry(inquiry)}>↩ Rückgängig machen</button>
@@ -3412,9 +3618,10 @@ Deutschland
                                 if (showOfferForm) {
                                     setEditingOfferId(null);
                                     setOfferForm({
-                                        guestId: '', wohnung: 'wohnung1', checkIn: '', checkOut: '', persons: 1,
+                                        guestId: '', guestName: '', guestEmail: '', guestAddress: '', wohnung: 'wohnung1', checkIn: '', checkOut: '', persons: 1,
                                         earlyCheckin: false, lateCheckout: false, finalCleaning: true,
                                         dogFee: false, dogCount: 1, projektSpace: false, projektSpaceCleaning: false, discountPercent: 0,
+                                        ignoreOccupancyCheck: false,
                                     });
                                 }
                                 setShowOfferForm(!showOfferForm);
@@ -3429,7 +3636,17 @@ Deutschland
                                     <div className="form-group">
                                         <label>Gast wählen *</label>
                                         <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                                            <select value={offerForm.guestId} onChange={(e) => setOfferForm({ ...offerForm, guestId: e.target.value })} style={{ flex: 1 }}>
+                                            <select value={offerForm.guestId} onChange={(e) => {
+                                                const gid = e.target.value;
+                                                const g = guests.find(gg => String(gg.id) === gid);
+                                                setOfferForm({
+                                                    ...offerForm,
+                                                    guestId: gid,
+                                                    guestName: g ? g.name : offerForm.guestName,
+                                                    guestEmail: g ? g.email : offerForm.guestEmail,
+                                                    guestAddress: g ? (g.address || '') : offerForm.guestAddress,
+                                                });
+                                            }} style={{ flex: 1 }}>
                                                 <option value="">-- Gast auswählen --</option>
                                                 {editingOfferId && offerForm.guestId && !guests.some(g => String(g.id) === String(offerForm.guestId)) && (
                                                     <option value={offerForm.guestId}>
@@ -3470,6 +3687,21 @@ Deutschland
 
                                     <div className="grid">
                                         <div className="form-group">
+                                            <label>Name des Gastes (für dieses Angebot anpassbar)</label>
+                                            <input type="text" value={offerForm.guestName} onChange={(e) => setOfferForm({ ...offerForm, guestName: e.target.value })} />
+                                        </div>
+                                        <div className="form-group">
+                                            <label>E-Mail (für dieses Angebot anpassbar)</label>
+                                            <input type="email" value={offerForm.guestEmail} onChange={(e) => setOfferForm({ ...offerForm, guestEmail: e.target.value })} />
+                                        </div>
+                                        <div className="form-group" style={{ gridColumn: '1/-1' }}>
+                                            <label>Adresse des Gastes (für dieses Angebot anpassbar)</label>
+                                            <textarea rows={2} value={offerForm.guestAddress} onChange={(e) => setOfferForm({ ...offerForm, guestAddress: e.target.value })} placeholder={"Straße Nr.\nPLZ Ort"}></textarea>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid">
+                                        <div className="form-group">
                                             <label>Wohnung *</label>
                                             <select value={offerForm.wohnung} onChange={(e) => setOfferForm({ ...offerForm, wohnung: e.target.value })}>
                                                 <option value="wohnung1">Wohnung I ({prices.wohnung1}€/Nacht)</option>
@@ -3502,7 +3734,7 @@ Deutschland
 
                                     {offerForm.checkIn && offerForm.checkOut && hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId) && (
                                         <div className="error-message" style={{ marginBottom: '12px' }}>
-                                            ✗ Dieser Zeitraum ist für {offerForm.wohnung === 'wohnung1' ? 'Wohnung I' : offerForm.wohnung === 'wohnung2' ? 'Wohnung II' : 'beide Wohnungen'} bereits belegt (manuelle Buchung oder Airbnb). Bitte anderen Zeitraum wählen.
+                                            ✗ Dieser Zeitraum ist für {offerForm.wohnung === 'wohnung1' ? 'Wohnung I' : offerForm.wohnung === 'wohnung2' ? 'Wohnung II' : 'beide Wohnungen'} bereits belegt (manuelle Buchung oder Airbnb). {offerForm.ignoreOccupancyCheck ? 'Wird wegen aktivierter Überschreibung trotzdem erstellt.' : 'Bitte anderen Zeitraum wählen, oder weiter unten die Belegungsprüfung ignorieren.'}
                                         </div>
                                     )}
 
@@ -3597,13 +3829,21 @@ Deutschland
 
                                     {offerForm.checkIn && offerForm.checkOut && hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId) && (
                                         <div className="error-message" style={{ marginBottom: '12px' }}>
-                                            ✗ Dieser Zeitraum ist für {offerForm.wohnung === 'wohnung1' ? 'Wohnung I' : offerForm.wohnung === 'wohnung2' ? 'Wohnung II' : 'beide Wohnungen'} bereits belegt (manuelle Buchung oder Airbnb). Bitte anderen Zeitraum wählen.
+                                            ✗ Dieser Zeitraum ist für {offerForm.wohnung === 'wohnung1' ? 'Wohnung I' : offerForm.wohnung === 'wohnung2' ? 'Wohnung II' : 'beide Wohnungen'} bereits belegt (manuelle Buchung oder Airbnb). {offerForm.ignoreOccupancyCheck ? 'Wird wegen aktivierter Überschreibung trotzdem erstellt.' : 'Bitte anderen Zeitraum wählen, oder hier die Belegungsprüfung ignorieren.'}
+                                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontWeight: 'normal' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={offerForm.ignoreOccupancyCheck}
+                                                    onChange={(e) => setOfferForm({ ...offerForm, ignoreOccupancyCheck: e.target.checked })}
+                                                />
+                                                Belegungsprüfung ignorieren (falls notwendig — z. B. bei bewusster Doppel-/Sonderbelegung)
+                                            </label>
                                         </div>
                                     )}
 
                                     <button
                                         onClick={createOffer}
-                                        disabled={!offerForm.guestId || !offerForm.checkIn || !offerForm.checkOut || nights <= 0 || hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId)}
+                                        disabled={!offerForm.guestId || !offerForm.checkIn || !offerForm.checkOut || nights <= 0 || (!offerForm.ignoreOccupancyCheck && hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId))}
                                         style={{ width: '100%' }}
                                     >
                                         {editingOfferId ? 'Änderungen speichern & E-Mail-Vorschau' : 'Angebot erstellen & E-Mail-Vorschau'}
@@ -3616,7 +3856,33 @@ Deutschland
                                     <div key={offer.id} className="item-card">
                                         <div className="item-header">
                                             <div>
-                                                <div className="item-title">{offer.id}</div>
+                                                <div className="item-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <input
+                                                        type="text"
+                                                        defaultValue={offerDisplayNumber(offer)}
+                                                        key={offer.id + ':' + (offerNumberOverrides[offer.id] || '')}
+                                                        onBlur={(e) => {
+                                                            const auto = (() => {
+                                                                const sorted = [...offers].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                                                                const idx = sorted.findIndex(o => o.id === offer.id);
+                                                                const seq = idx >= 0 ? idx + 1 : sorted.length + 1;
+                                                                let year = new Date().getFullYear();
+                                                                if (offer.created) {
+                                                                    const parts = offer.created.split('.');
+                                                                    if (parts.length === 3 && parseInt(parts[2], 10)) year = parseInt(parts[2], 10);
+                                                                }
+                                                                return `AN-${year}-${String(seq).padStart(4, '0')}`;
+                                                            })();
+                                                            setOfferNumberOverride(offer.id, e.target.value === auto ? '' : e.target.value);
+                                                        }}
+                                                        style={{ fontSize: '16px', fontWeight: '600', border: '1px dashed var(--licht-40, #999)', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', padding: '3px 6px', width: '160px', color: offerNumberOverrides[offer.id] ? 'var(--accent)' : 'inherit', cursor: 'text' }}
+                                                        title="Klicken zum Bearbeiten der Angebotsnummer"
+                                                    />
+                                                    <span style={{ fontSize: '11px', color: 'var(--licht-70)' }}>✏️</span>
+                                                    {offerNumberOverrides[offer.id] && (
+                                                        <button className="secondary" style={{ padding: '2px 6px', fontSize: '11px' }} onClick={() => setOfferNumberOverride(offer.id, '')} title="Auf automatische Nummer zurücksetzen">↺</button>
+                                                    )}
+                                                </div>
                                                 <div className="item-meta">{offer.guest.name} • {offer.created}</div>
                                             </div>
                                             <div style={{ textAlign: 'right' }}>
@@ -3628,10 +3894,11 @@ Deutschland
                                         </div>
                                         <div className="item-meta">{offer.wohnung === 'wohnung1' ? 'Wohnung I' : 'Wohnung II'} • {offer.nights} Nächte • {offer.checkIn} bis {offer.checkOut}</div>
                                         <div className="button-group" style={{ marginTop: '12px' }}>
-                                            <button className="secondary" onClick={() => setShowMailPreview(offer)}>📧 Mail anzeigen</button>
+                                            <button className="secondary" onClick={() => openOfferMailPreview(offer)}>📧 Mail anzeigen</button>
                                             <button className="secondary" onClick={() => printOffer(offer)}>🖨️ Drucken / PDF</button>
                                             <button onClick={() => sendOfferWithAttachment(offer)}>📎 PDF an Mail anhängen &amp; senden</button>
                                             <button className="secondary" onClick={() => startEditOffer(offer)}>✏️ Bearbeiten</button>
+                                            <button className="secondary" onClick={() => { applySourceToInvoice('offer:' + offer.id); setActiveTab('invoices'); setShowInvoiceForm(true); }}>🧾 Rechnung erstellen</button>
                                             {offer.status === 'sent' && (
                                                 <button className="success" onClick={() => convertToBooking(offer)}>✓ Zur Buchung</button>
                                             )}
@@ -3905,9 +4172,16 @@ Deutschland
                                     <h3>{editingInvoiceId ? 'Rechnung bearbeiten' : 'Rechnung erstellen'}</h3>
 
                                     <div className="form-group">
-                                        <label>Aus Anfrage, Buchung oder Gäste-Adressbuch übernehmen (optional)</label>
+                                        <label>Aus Angebot, Anfrage, Buchung oder Gäste-Adressbuch übernehmen (optional)</label>
                                         <select value={invoiceForm.sourceRef} onChange={(e) => applySourceToInvoice(e.target.value)}>
                                             <option value="">-- manuell eingeben --</option>
+                                            {offers.length > 0 && (
+                                                <optgroup label="Angebote">
+                                                    {offers.map(o => (
+                                                        <option key={'ofr-' + o.id} value={`offer:${o.id}`}>{offerDisplayNumber(o)} · {o.guest.name} · {o.checkIn} – {o.checkOut}</option>
+                                                    ))}
+                                                </optgroup>
+                                            )}
                                             {inquiries.length > 0 && (
                                                 <optgroup label="Anfragen">
                                                     {inquiries.map(i => (
@@ -4142,7 +4416,29 @@ Deutschland
                                     <div key={invoice.id} className="item-card">
                                         <div className="item-header">
                                             <div>
-                                                <div className="item-title">{invoice.id}</div>
+                                                <div className="item-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                    <input
+                                                        type="text"
+                                                        defaultValue={invoiceDisplayNumber(invoice)}
+                                                        key={invoice.id + ':' + (invoiceNumberOverrides[invoice.id] || '')}
+                                                        onBlur={(e) => {
+                                                            const auto = (() => {
+                                                                const sorted = [...invoices].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+                                                                const idx = sorted.findIndex(i => i.id === invoice.id);
+                                                                const seq = idx >= 0 ? idx + 1 : sorted.length + 1;
+                                                                const year = invoice.invoiceDate ? new Date(invoice.invoiceDate).getFullYear() : new Date().getFullYear();
+                                                                return `RE-${year}-${String(seq).padStart(4, '0')}`;
+                                                            })();
+                                                            setInvoiceNumberOverride(invoice.id, e.target.value === auto ? '' : e.target.value);
+                                                        }}
+                                                        style={{ fontSize: '16px', fontWeight: '600', border: '1px dashed var(--licht-40, #999)', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', padding: '3px 6px', width: '160px', color: invoiceNumberOverrides[invoice.id] ? 'var(--accent)' : 'inherit', cursor: 'text' }}
+                                                        title="Klicken zum Bearbeiten der Rechnungsnummer"
+                                                    />
+                                                    <span style={{ fontSize: '11px', color: 'var(--licht-70)' }}>✏️</span>
+                                                    {invoiceNumberOverrides[invoice.id] && (
+                                                        <button className="secondary" style={{ padding: '2px 6px', fontSize: '11px' }} onClick={() => setInvoiceNumberOverride(invoice.id, '')} title="Auf automatische Nummer zurücksetzen">↺</button>
+                                                    )}
+                                                </div>
                                                 <div className="item-meta">{invoice.guestName} • {invoice.created}</div>
                                             </div>
                                             <div style={{ textAlign: 'right' }}>
@@ -4157,7 +4453,7 @@ Deutschland
                                             {invoice.vatMode === 'kleinunternehmer' ? 'Ohne USt (§19)' : `${(invoice.vatRate * 100).toFixed(0)}% USt`}
                                         </div>
                                         <div className="button-group" style={{ marginTop: '12px' }}>
-                                            <button className="secondary" onClick={() => setShowInvoiceMailPreview(invoice)}>📧 Mail anzeigen</button>
+                                            <button className="secondary" onClick={() => openInvoiceMailPreview(invoice)}>📧 Mail anzeigen</button>
                                             <button className="secondary" onClick={() => printInvoice(invoice)}>🖨️ Drucken / PDF</button>
                                             <button onClick={() => sendInvoiceWithAttachment(invoice)}>📎 PDF an Mail anhängen &amp; senden</button>
                                             <button className="secondary" onClick={() => startEditInvoice(invoice)}>✏️ Bearbeiten</button>
@@ -4440,9 +4736,14 @@ Deutschland
                     {showMailPreview && (
                         <div className="modal-overlay" onClick={() => setShowMailPreview(null)}>
                             <div className="modal" onClick={(e) => e.stopPropagation()}>
-                                <h2 style={{ marginTop: 0 }}>Angebot {showMailPreview.id} an {showMailPreview.guest.name}</h2>
+                                <h2 style={{ marginTop: 0 }}>Angebot {offerDisplayNumber(showMailPreview)} an {showMailPreview.guest.name}</h2>
                                 <p style={{ fontSize: '12px', color: 'var(--licht-70)' }}>Kopiere diese Mail und versende sie per E-Mail-Client, oder öffne das druckbare Angebot mit Briefkopf als PDF-Anhang.</p>
-                                
+
+                                <div className="form-group">
+                                    <label>Betreff</label>
+                                    <input type="text" value={offerMailSubject} onChange={(e) => setOfferMailSubject(e.target.value)} />
+                                </div>
+
                                 <div className="mail-preview">
                                     {generateMailContent(showMailPreview)}
                                 </div>
@@ -4450,8 +4751,8 @@ Deutschland
                                 <div className="button-group">
                                     <button className="secondary" onClick={() => copyToClipboard(generateMailContent(showMailPreview))}>📋 Kopieren</button>
                                     <button className="secondary" onClick={() => printOffer(showMailPreview)}>🖨️ Ansehen / Drucken</button>
-                                    <button onClick={() => sendOfferWithAttachment(showMailPreview)}>📎 PDF an Mail anhängen &amp; senden</button>
-                                    <button className="secondary" onClick={() => window.location.href = `mailto:${showMailPreview.guest.email}?subject=Angebot ${showMailPreview.id} - Greenhouse Market`}>✉️ Nur Mail öffnen</button>
+                                    <button onClick={() => sendOfferWithAttachment(showMailPreview, offerMailSubject)}>📎 PDF an Mail anhängen &amp; senden</button>
+                                    <button className="secondary" onClick={() => window.location.href = `mailto:${showMailPreview.guest.email}?subject=${encodeURIComponent(offerMailSubject)}&body=${encodeURIComponent(generateMailContent(showMailPreview))}`}>✉️ Nur Mail öffnen</button>
                                     <button className="secondary" onClick={() => setShowMailPreview(null)}>✕</button>
                                 </div>
                             </div>
@@ -4461,8 +4762,13 @@ Deutschland
                     {showInvoiceMailPreview && (
                         <div className="modal-overlay" onClick={() => setShowInvoiceMailPreview(null)}>
                             <div className="modal" onClick={(e) => e.stopPropagation()}>
-                                <h2 style={{ marginTop: 0 }}>Rechnung {showInvoiceMailPreview.id} an {showInvoiceMailPreview.guestName}</h2>
+                                <h2 style={{ marginTop: 0 }}>Rechnung {invoiceDisplayNumber(showInvoiceMailPreview)} an {showInvoiceMailPreview.guestName}</h2>
                                 <p style={{ fontSize: '12px', color: 'var(--licht-70)' }}>Kopiere den Text und versende ihn per E-Mail-Client, oder öffne die druckbare Rechnung mit Briefkopf als PDF-Anhang.</p>
+
+                                <div className="form-group">
+                                    <label>Betreff</label>
+                                    <input type="text" value={invoiceMailSubject} onChange={(e) => setInvoiceMailSubject(e.target.value)} />
+                                </div>
 
                                 <div className="mail-preview">
                                     {generateInvoiceMailContent(showInvoiceMailPreview)}
@@ -4471,8 +4777,8 @@ Deutschland
                                 <div className="button-group">
                                     <button className="secondary" onClick={() => copyToClipboard(generateInvoiceMailContent(showInvoiceMailPreview))}>📋 Kopieren</button>
                                     <button className="secondary" onClick={() => printInvoice(showInvoiceMailPreview)}>🖨️ Ansehen / Drucken</button>
-                                    <button onClick={() => sendInvoiceWithAttachment(showInvoiceMailPreview)}>📎 PDF an Mail anhängen &amp; senden</button>
-                                    <button className="secondary" onClick={() => window.location.href = `mailto:${showInvoiceMailPreview.guestEmail}?subject=Rechnung ${showInvoiceMailPreview.id} - Greenhouse Market`}>✉️ Nur Mail öffnen</button>
+                                    <button onClick={() => sendInvoiceWithAttachment(showInvoiceMailPreview, invoiceMailSubject)}>📎 PDF an Mail anhängen &amp; senden</button>
+                                    <button className="secondary" onClick={() => window.location.href = `mailto:${showInvoiceMailPreview.guestEmail}?subject=${encodeURIComponent(invoiceMailSubject)}&body=${encodeURIComponent(generateInvoiceMailContent(showInvoiceMailPreview))}`}>✉️ Nur Mail öffnen</button>
                                     <button className="secondary" onClick={() => setShowInvoiceMailPreview(null)}>✕</button>
                                 </div>
                             </div>
