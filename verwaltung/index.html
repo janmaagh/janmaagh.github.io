@@ -2524,6 +2524,35 @@ Deutschland`;
                 return items;
             };
 
+            // Erstellt (öffnet den vorausgefüllten Rechnungsentwurf für) eine Rechnung, die
+            // NUR die Anzahlung oder NUR den Restbetrag einer Buchung abdeckt — statt wie
+            // bisher immer den vollen Aufenthaltspreis aufzuschlüsseln. Nützlich, weil Gäste
+            // im Angebot bisher nur zur Anzahlung aufgefordert wurden und der Restbetrag
+            // separat in Rechnung gestellt werden muss, sobald er fällig ist.
+            const applyBookingLegToInvoice = (bookingId, leg) => {
+                const booking = bookings.find(b => b.id === bookingId);
+                if (!booking) return;
+                const isDownpayment = leg === 'downpayment';
+                const amount = isDownpayment ? safeNum(booking.downPayment) : safeNum(booking.remaining);
+                const description = isDownpayment
+                    ? `Anzahlung für Aufenthalt ${booking.checkIn} bis ${booking.checkOut}`
+                    : `Restzahlung für Aufenthalt ${booking.checkIn} bis ${booking.checkOut}`;
+
+                setInvoiceForm({
+                    ...emptyInvoiceForm,
+                    sourceRef: `booking:${booking.id}`,
+                    wohnung: booking.wohnung,
+                    guestName: booking.guest.name,
+                    guestEmail: booking.guest.email,
+                    guestAddress: booking.guest.address || '',
+                    serviceStart: booking.checkIn,
+                    serviceEnd: booking.checkOut,
+                    items: [{ description, quantity: 1, unitPrice: amount }],
+                });
+                setActiveTab('invoices');
+                setShowInvoiceForm(true);
+            };
+
             const applySourceToInvoice = (value) => {
                 if (!value) {
                     setInvoiceForm({ ...emptyInvoiceForm, items: [{ description: '', quantity: 1, unitPrice: 0 }] });
@@ -3979,7 +4008,9 @@ Deutschland
                                         {booking.downPaymentPaid && !booking.remainingPaid && (
                                             <button className="success" onClick={() => markPaymentDone(booking.id, 'remaining')}>✓ Restzahlung erhalten</button>
                                         )}
-                                        <button className="secondary" onClick={() => { applySourceToInvoice('booking:' + booking.id); setActiveTab('invoices'); setShowInvoiceForm(true); }}>🧾 Rechnung erstellen</button>
+                                        <button className="secondary" onClick={() => { applySourceToInvoice('booking:' + booking.id); setActiveTab('invoices'); setShowInvoiceForm(true); }}>🧾 Rechnung (Gesamtbetrag)</button>
+                                        <button className="secondary" onClick={() => applyBookingLegToInvoice(booking.id, 'downpayment')}>🧾 Rechnung (nur Anzahlung)</button>
+                                        <button className="secondary" onClick={() => applyBookingLegToInvoice(booking.id, 'remaining')}>🧾 Rechnung (nur Restbetrag)</button>
                                         <button className="danger" onClick={() => deleteBooking(booking.id)}>Löschen</button>
                                     </div>
                                 </div>
