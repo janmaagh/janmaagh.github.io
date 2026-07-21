@@ -2779,7 +2779,7 @@ LEISTUNGEN
                 }
                 content += `GESAMTBETRAG: ${invoice.gross.toFixed(2)}€
 
-Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto:
+Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto (spätestens jedoch mit dem Anreisetag fällig):
 
 Greenhouse Market GbR
 ${companyInfo.iban ? `IBAN: ${companyInfo.iban}` : 'IBAN: [Ihre IBAN hier eintragen]'}
@@ -2866,7 +2866,7 @@ Deutschland
                     + '<tr class="total-row"><td colspan="3" style="text-align:right">Gesamtbetrag</td><td style="text-align:right">' + invoice.gross.toFixed(2) + ' €</td></tr>'
                     + '</tbody></table>'
                     + (notesHtml ? ('<p>' + notesHtml + '</p>') : '')
-                    + '<p>Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto:</p>'
+                    + '<p>Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto (spätestens jedoch mit dem Anreisetag fällig):</p>'
                     + '<p>Greenhouse Market GbR<br>'
                     + 'IBAN: ' + (companyInfo.iban || '[bitte in den Einstellungen eintragen]') + '<br>'
                     + 'BIC: ' + (companyInfo.bic || '[bitte in den Einstellungen eintragen]') + '<br>'
@@ -3042,7 +3042,7 @@ Deutschland
                 }
 
                 ensureSpace(36);
-                doc.text('Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto:', marginLeft, y);
+                doc.text('Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto (spätestens jedoch mit dem Anreisetag fällig):', marginLeft, y);
                 y += 6;
                 doc.text('Greenhouse Market GbR', marginLeft, y);
                 y += 5;
