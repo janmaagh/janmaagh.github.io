@@ -1246,7 +1246,8 @@ Passwort: ${wifiInfo.password || '[bitte in den Einstellungen hinterlegen]'}
 Wenn du Fragen hast, gib mir gern Bescheid.
 
 Liebe Grüße
-Greenhouse Market`;
+Lucia und Jan 
+Greenhouse Fürstenberg `;
 }
 
 async function sendWelcomeEmail(env, booking, wifiInfo, companyInfo) {
