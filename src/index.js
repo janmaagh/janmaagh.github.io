@@ -1243,7 +1243,7 @@ Hier sind die WLAN-Zugangsdaten:
 Name: ${wifiInfo.name}
 Passwort: ${wifiInfo.password || '[bitte in den Einstellungen hinterlegen]'}
 
-Wenn du Fragen hast, gib mir gern Bescheid.
+Wenn du Fragen hast, gib uns gerne Bescheid.
 
 Liebe Grüße
 Lucia und Jan 
