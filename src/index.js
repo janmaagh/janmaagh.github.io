@@ -832,8 +832,13 @@ async function handleIcalProxy(url) {
 const DATEV_UPLOAD_EMAIL = '5f7f7361-efe5-4cad-8db0-a0849c883227@uploadmail.datev.de';
 const DATEV_SENDER_EMAIL = 'buchhaltung@greenhouse-fuerstenberg.de';
 
+// Liefert das heutige Datum als 'YYYY-MM-DD' — bewusst in deutscher Zeit
+// (Europe/Berlin), nicht in UTC. So bleibt die Berechnung ("heute" für DATEV-
+// Fälligkeit, Erinnerungen, Begrüßungsmails) mit dem tatsächlichen deutschen
+// Kalendertag synchron, unabhängig von der Tages-/Nachtzeit in UTC (sonst
+// würde z. B. kurz nach deutscher Mitternacht UTC noch den Vortag zeigen).
 function todayStr() {
-  return new Date().toISOString().split('T')[0];
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
 }
 
 async function getCompanyInfo(env) {
