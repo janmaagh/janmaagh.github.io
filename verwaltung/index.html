@@ -764,6 +764,7 @@
                 notes: row.notes,
                 status: row.status,
                 datevSentAt: row.datev_sent_at || null,
+                displayNumber: row.display_number || null,
                 createdAt: row.created_at || null,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
@@ -794,6 +795,7 @@
                 total: row.total,
                 nights: row.nights,
                 status: row.status,
+                displayNumber: row.display_number || null,
                 createdAt: row.created_at || null,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
@@ -2368,6 +2370,11 @@ Deutschland`;
             const invoiceDisplayNumber = (invoice) => {
                 if (!invoice) return '';
                 if (invoiceNumberOverrides[invoice.id]) return invoiceNumberOverrides[invoice.id];
+                // Bevorzugt die serverseitig einmalig vergebene, dauerhafte Nummer
+                // (Spalte display_number) — garantiert identisch mit PDF/DATEV-Versand.
+                // Fallback (Berechnung im Browser) nur für Alt-Datensätze von vor der
+                // Einführung dieser persistenten Nummer.
+                if (invoice.displayNumber) return invoice.displayNumber;
                 const sorted = [...invoices].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
                 const idx = sorted.findIndex(i => i.id === invoice.id);
                 const seq = idx >= 0 ? idx + 1 : sorted.length + 1;
@@ -2378,6 +2385,7 @@ Deutschland`;
             const offerDisplayNumber = (offer) => {
                 if (!offer) return '';
                 if (offerNumberOverrides[offer.id]) return offerNumberOverrides[offer.id];
+                if (offer.displayNumber) return offer.displayNumber;
                 const sorted = [...offers].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
                 const idx = sorted.findIndex(o => o.id === offer.id);
                 const seq = idx >= 0 ? idx + 1 : sorted.length + 1;
@@ -2786,12 +2794,13 @@ Deutschland`;
                 }
             };
 
-            const sendInvoiceToDatev = async (id) => {
-                if (!confirm(`Rechnung ${id} jetzt manuell per E-Mail an DATEV senden?`)) return;
+            const sendInvoiceToDatev = async (invoice) => {
+                const label = invoiceDisplayNumber(invoice);
+                if (!confirm(`Rechnung ${label} jetzt manuell per E-Mail an DATEV senden?`)) return;
                 try {
-                    await apiFetch(`/api/datev/send-invoice/${id}`, { method: 'POST' });
-                    setInvoices(invoices.map(i => i.id === id ? { ...i, datevSentAt: new Date().toISOString() } : i));
-                    alert(`Rechnung ${id} wurde an DATEV gesendet.`);
+                    await apiFetch(`/api/datev/send-invoice/${invoice.id}`, { method: 'POST' });
+                    setInvoices(invoices.map(i => i.id === invoice.id ? { ...i, datevSentAt: new Date().toISOString() } : i));
+                    alert(`Rechnung ${label} wurde an DATEV gesendet.`);
                 } catch (err) {
                     alert('Versand an DATEV fehlgeschlagen: ' + err.message);
                 }
@@ -4569,7 +4578,7 @@ Deutschland
                                             )}
                                             <button
                                                 className="secondary"
-                                                onClick={() => sendInvoiceToDatev(invoice.id)}
+                                                onClick={() => sendInvoiceToDatev(invoice)}
                                                 title={invoice.datevSentAt ? `Bereits am ${new Date(invoice.datevSentAt).toLocaleString('de-DE')} an DATEV gesendet — erneut senden?` : 'Manuell an DATEV senden'}
                                                 style={invoice.datevSentAt ? { opacity: 0.7 } : {}}
                                             >
@@ -4588,19 +4597,25 @@ Deutschland
                     {activeTab === 'postausgang' && (() => {
                         const datevEvents = [];
                         const welcomeEvents = [];
+                        const invoiceById = {};
+                        for (const inv of invoices) invoiceById[inv.id] = inv;
                         for (const b of bookings) {
                             if (b.datevDownpaymentSentAt) {
+                                const linkedInvoice = b.downPaymentInvoiceId ? invoiceById[b.downPaymentInvoiceId] : null;
                                 datevEvents.push({
                                     bookingId: b.id, guestName: b.guest.name, leg: 'Anzahlung',
                                     amount: b.downPayment, sentAt: b.datevDownpaymentSentAt,
-                                    invoiceId: b.downPaymentInvoiceId, checkIn: b.checkIn, checkOut: b.checkOut,
+                                    invoiceId: linkedInvoice ? invoiceDisplayNumber(linkedInvoice) : b.downPaymentInvoiceId,
+                                    checkIn: b.checkIn, checkOut: b.checkOut,
                                 });
                             }
                             if (b.datevRemainingSentAt) {
+                                const linkedInvoice = b.remainingInvoiceId ? invoiceById[b.remainingInvoiceId] : null;
                                 datevEvents.push({
                                     bookingId: b.id, guestName: b.guest.name, leg: 'Restzahlung',
                                     amount: b.remaining, sentAt: b.datevRemainingSentAt,
-                                    invoiceId: b.remainingInvoiceId, checkIn: b.checkIn, checkOut: b.checkOut,
+                                    invoiceId: linkedInvoice ? invoiceDisplayNumber(linkedInvoice) : b.remainingInvoiceId,
+                                    checkIn: b.checkIn, checkOut: b.checkOut,
                                 });
                             }
                             if (b.welcomeEmailSentAt) {
@@ -4654,7 +4669,7 @@ Deutschland
                                     {manualDatevInvoices.map((inv) => (
                                         <div key={inv.id} className="list-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--rahmen, #333)', padding: '10px 0' }}>
                                             <div>
-                                                <div style={{ fontWeight: 600 }}>{inv.id} — {inv.guestName}</div>
+                                                <div style={{ fontWeight: 600 }}>{invoiceDisplayNumber(inv)} — {inv.guestName}</div>
                                                 <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>
                                                     {Number(inv.gross).toFixed(2)} € · Quelle: {inv.sourceRef || '-'}
                                                 </div>
