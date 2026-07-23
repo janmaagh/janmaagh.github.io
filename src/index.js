@@ -1244,18 +1244,18 @@ async function sendInvoiceToDatevManually(env, invoiceId) {
 // zuerst die Erinnerung oder zuerst der DATEV-Export läuft.
 async function ensureLegInvoice(env, booking, leg) {
   const isDownpayment = leg === 'downpayment';
+  const linkedInvoiceId = isDownpayment ? booking.down_payment_invoice_id : booking.remaining_invoice_id;
 
-  // Nur die Restzahlung wird aktuell schon vor Fälligkeit (bei der
-  // Erinnerungsmail) in Rechnung gestellt — daher nur dort ein Wiederverwenden
-  // über die Buchung selbst möglich. Für die Anzahlung gibt es keine
-  // vergleichbare Vor-Erstellung, daher wird hier immer neu angelegt.
-  if (!isDownpayment && booking.remaining_invoice_id) {
-    const existing = await getRow(env, 'invoices', booking.remaining_invoice_id);
+  // Falls für diese Zahlungs-Position schon einmal eine Rechnung angelegt
+  // wurde (z. B. Anzahlung beim manuellen Versand, Restzahlung bei der
+  // Erinnerungsmail), wird sie wiederverwendet statt eine zweite anzulegen.
+  if (linkedInvoiceId) {
+    const existing = await getRow(env, 'invoices', linkedInvoiceId);
     if (existing) {
       return {
         invoiceId: existing.id,
         amount: existing.gross,
-        description: JSON.parse(existing.items_json)[0]?.description || 'Restzahlung',
+        description: JSON.parse(existing.items_json)[0]?.description || (isDownpayment ? 'Anzahlung' : 'Restzahlung'),
         invoiceDate: existing.invoice_date,
       };
     }
@@ -1289,9 +1289,8 @@ async function ensureLegInvoice(env, booking, leg) {
     'open'
   ).run();
 
-  if (!isDownpayment) {
-    await env.DB.prepare(`UPDATE bookings SET remaining_invoice_id = ? WHERE id = ?`).bind(newInvoiceId, booking.id).run();
-  }
+  const column = isDownpayment ? 'down_payment_invoice_id' : 'remaining_invoice_id';
+  await env.DB.prepare(`UPDATE bookings SET ${column} = ? WHERE id = ?`).bind(newInvoiceId, booking.id).run();
 
   return { invoiceId: newInvoiceId, amount, description, invoiceDate };
 }
