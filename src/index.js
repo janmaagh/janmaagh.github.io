@@ -24,6 +24,10 @@ function errorResponse(message, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
+// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
+// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
+// Wandelt ein Passwort in einen SHA-256-Hash um (Hex-String). So liegt das
+// eigentliche Passwort nie im Klartext in der Datenbank.
 async function hashPassword(password) {
   const encoder = new TextEncoder();
   const data = encoder.encode(password);
@@ -31,6 +35,15 @@ async function hashPassword(password) {
   return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Prüft den Admin-Token für alle schreibenden/lesenden Admin-Routen.
+// Die einzige öffentliche Route ist POST /api/inquiries (Gäste-Anfrage).
+//
+// Zwei mögliche Quellen für das gültige Passwort:
+// 1. Ein in der Datenbank gespeicherter Passwort-Hash (wurde übers Booking-Tool
+//    selbst gesetzt/geändert) — wird bevorzugt geprüft, falls vorhanden.
+// 2. Fallback: das Cloudflare-Secret ADMIN_TOKEN (der ursprüngliche, beim
+//    Einrichten per Dashboard/Wrangler gesetzte Wert) — greift nur, solange
+//    noch kein Passwort in der Datenbank gesetzt wurde.
 async function checkAuth(request, env) {
   const authHeader = request.headers.get('Authorization') || '';
   const token = authHeader.replace('Bearer ', '');
@@ -70,6 +83,8 @@ async function deleteRow(env, table, id) {
   await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
 }
 
+// Wandelt ein JS-Objekt (camelCase) in eine INSERT/UPDATE-freundliche Form um,
+// basierend auf einer expliziten Feldliste (snake_case Spaltennamen -> camelCase Keys).
 function pick(obj, fieldMap) {
   const out = {};
   for (const [column, key] of Object.entries(fieldMap)) {
@@ -138,6 +153,9 @@ const INQUIRY_FIELDS = {
   policy_accepted_at: 'policyAcceptedAt',
 };
 
+// Legt automatisch einen Gast im Adressbuch an, falls noch keiner mit dieser
+// E-Mail existiert — genutzt bei neuen Anfragen und neuen Buchungen, damit das
+// Gäste-Adressbuch nicht manuell gepflegt werden muss.
 async function ensureGuestExists(env, { name, email, phone, street, houseNumber, zip, city, address }) {
   if (!email) return;
   const existing = await env.DB.prepare(`SELECT id FROM guests WHERE lower(email) = lower(?)`).bind(email).first();
@@ -156,6 +174,7 @@ async function handleInquiries(request, env, method, id) {
   }
 
   if (method === 'POST') {
+    // Öffentlich erreichbar — jeder Gast darf eine Anfrage einreichen.
     const body = await request.json();
     if (!body.name || !body.email || !body.checkIn || !body.checkOut || !body.wohnung) {
       return errorResponse('Pflichtfelder fehlen (name, email, checkIn, checkOut, wohnung)');
@@ -246,14 +265,28 @@ async function handleBookings(request, env, method, id) {
     const b = await request.json();
     const existing = await getRow(env, 'bookings', id);
     if (!existing) return errorResponse('Buchung nicht gefunden', 404);
+
+    const depositPaid = b.depositPaid !== undefined ? boolToInt(b.depositPaid) : existing.deposit_paid;
+    const downPaymentPaid = b.downPaymentPaid !== undefined ? boolToInt(b.downPaymentPaid) : existing.down_payment_paid;
+    const remainingPaid = b.remainingPaid !== undefined ? boolToInt(b.remainingPaid) : existing.remaining_paid;
+
+    // Zeitstempel wird NUR beim Übergang unbezahlt -> bezahlt gesetzt (nicht bei
+    // jedem Speichern neu überschrieben). Wichtig für die DATEV-Automatik: sie
+    // rechnet damit, wann die Zahlung tatsächlich einging (steuerlich relevant
+    // für die Ist-Versteuerung), nicht wann die Buchung zuletzt bearbeitet wurde.
+    const downPaymentPaidAt = (downPaymentPaid && !existing.down_payment_paid)
+      ? new Date().toISOString() : existing.down_payment_paid_at;
+    const remainingPaidAt = (remainingPaid && !existing.remaining_paid)
+      ? new Date().toISOString() : existing.remaining_paid_at;
+
     await env.DB.prepare(
-      `UPDATE bookings SET deposit_paid=?, down_payment_paid=?, remaining_paid=?, status=?
+      `UPDATE bookings SET deposit_paid=?, down_payment_paid=?, remaining_paid=?, status=?,
+       down_payment_paid_at=?, remaining_paid_at=?
        WHERE id=?`
     ).bind(
-      b.depositPaid !== undefined ? boolToInt(b.depositPaid) : existing.deposit_paid,
-      b.downPaymentPaid !== undefined ? boolToInt(b.downPaymentPaid) : existing.down_payment_paid,
-      b.remainingPaid !== undefined ? boolToInt(b.remainingPaid) : existing.remaining_paid,
+      depositPaid, downPaymentPaid, remainingPaid,
       b.status || existing.status,
+      downPaymentPaidAt, remainingPaidAt,
       id
     ).run();
     return jsonResponse(await getRow(env, 'bookings', id));
@@ -428,10 +461,16 @@ async function handleInvoices(request, env, method, id) {
   }
 
   return errorResponse('Methode nicht unterstützt', 405);
-}// ---------------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
 // Einstellungen (Preise, Firmendaten, Stornobedingungen, Anzahlungs-%)
 // ---------------------------------------------------------------------------
 
+// Öffentlicher, nicht-passwortgeschützter Endpunkt für das Gäste-Tool — zeigt
+// nur die Felder, die Gäste vor einer Buchung legitim sehen müssen (Preise,
+// Stornobedingungen). KEINE Firmendaten (IBAN etc.) oder sonstige interne
+// Einstellungen — diese bleiben ausschließlich über /api/settings (mit Login) erreichbar.
 async function handlePublicSettings(request, env) {
   const pricesRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'prices'`).first();
   const policyRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'cancellation_policy'`).first();
@@ -444,6 +483,10 @@ async function handlePublicSettings(request, env) {
   });
 }
 
+// Öffentlicher Endpunkt: liefert die ORIGINAL eingegebenen Start-/Enddaten aller
+// manuellen Blockierungen (unverschoben) — genutzt von der Website, um die
+// beiden Randtage (die selbst frei bleiben) visuell als Übergangstage zu
+// kennzeichnen, genau wie bei An-/Abreisetagen echter Buchungen.
 async function handlePublicBlockedEdges(request, env, wohnungParam) {
   const validWohnungen = ['wohnung1', 'wohnung2', 'both'];
   if (!validWohnungen.includes(wohnungParam)) {
@@ -538,6 +581,10 @@ async function handleChangePassword(request, env) {
 
 // ---------------------------------------------------------------------------
 // Datensicherung — kompletter Export aller Tabellen als JSON.
+// Manuell jederzeit abrufbar, zusätzlich läuft wöchentlich ein automatischer
+// Schnappschuss (siehe scheduled()). Alte automatische Schnappschüsse werden
+// nach einer Weile aufgeräumt (die letzten 12 — ca. 3 Monate wöchentlich —
+// bleiben erhalten).
 // ---------------------------------------------------------------------------
 
 async function buildFullBackup(env) {
@@ -604,6 +651,7 @@ async function handleGetBackup(request, env, id) {
 async function createAutomaticBackup(env) {
   const backup = await buildFullBackup(env);
   await env.DB.prepare('INSERT INTO backups (data_json) VALUES (?)').bind(JSON.stringify(backup)).run();
+  // Alte Schnappschüsse aufräumen — die letzten 12 (≈ 3 Monate wöchentlich) bleiben.
   await env.DB.prepare(
     `DELETE FROM backups WHERE id NOT IN (SELECT id FROM backups ORDER BY created_at DESC LIMIT 12)`
   ).run();
@@ -611,6 +659,13 @@ async function createAutomaticBackup(env) {
 
 // ---------------------------------------------------------------------------
 // Löschkonzept (Art. 5 Abs. 1 lit. e DSGVO — Speicherbegrenzung)
+//
+// - Anfragen ohne Buchung (status 'new'/'rejected'): gelöscht nach X Monaten
+// - Angebote ohne Buchung (status 'sent'): gelöscht nach X Monaten
+// - Buchungen: NICHT gelöscht (Referenz für Rechnungen/Statistik), aber die
+//   Gästedaten werden nach X Jahren nach Abreise ANONYMISIERT
+// - Rechnungen: werden NIE automatisch gelöscht (10 Jahre Aufbewahrungspflicht
+//   nach § 147 AO) — das übernimmt bewusst kein Automatismus.
 // ---------------------------------------------------------------------------
 
 async function getRetentionPolicy(env) {
@@ -630,6 +685,7 @@ async function logRetentionAction(env, action, table, recordId, reason) {
   ).bind(action, table, recordId, reason).run();
 }
 
+// dryRun = true: nur ermitteln, was betroffen wäre, ohne etwas zu verändern.
 async function runRetentionCleanup(env, dryRun) {
   const policy = await getRetentionPolicy(env);
   const report = { staleInquiries: [], staleOffers: [], bookingsToAnonymize: [] };
@@ -696,7 +752,10 @@ async function handleRetentionLog(request, env) {
 }
 
 // ---------------------------------------------------------------------------
-// Airbnb-Export
+// Airbnb-Export: NUR bestätigte Buchungen (status IN awaiting_downpayment,
+// confirmed, completed — d.h. mindestens die Kaution ist bestätigt und die
+// Buchung ist damit verbindlich; "awaiting_deposit" zählt bewusst NICHT als
+// bestätigt und blockiert Airbnb nicht).
 // ---------------------------------------------------------------------------
 
 function toIcsDate(dateStr) {
@@ -709,6 +768,8 @@ async function handleExportIcs(request, env, wohnungParam, includeBlocks) {
     return new Response('Ungültiger Parameter "wohnung" (erwartet: wohnung1, wohnung2 oder both)', { status: 400 });
   }
 
+  // "both"-Buchungen blockieren zusätzlich auch die Einzelwohnungen, da bei
+  // Buchung beider Wohnungen natürlich auch jede einzelne belegt ist.
   const wohnungFilter = wohnungParam === 'both'
     ? `wohnung IN ('wohnung1', 'wohnung2', 'both')`
     : `wohnung IN (?, 'both')`;
@@ -746,6 +807,12 @@ async function handleExportIcs(request, env, wohnungParam, includeBlocks) {
   }
 
   for (const b of blockedResults) {
+    // Statt EINES Termins über den ganzen Zeitraum wird für JEDEN einzelnen,
+    // wirklich betroffenen Tag (checkIn+1 bis checkOut-1) ein eigener,
+    // unmissverständlicher Ein-Tages-Termin erzeugt. Das lässt keinen
+    // Interpretationsspielraum mehr zu, wie genau Airbnb den Rand eines
+    // mehrtägigen Zeitraums behandelt (das hatte sich als unzuverlässig
+    // erwiesen) — ein einzelner Tag (DTSTART=X, DTEND=X+1) ist eindeutig.
     let cur = addOneDay(b.check_in);
     let dayIndex = 0;
     while (cur < b.check_out) {
@@ -768,13 +835,14 @@ async function handleExportIcs(request, env, wohnungParam, includeBlocks) {
     headers: {
       'Content-Type': 'text/calendar; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=1800',
+      'Cache-Control': 'public, max-age=1800', // 30 Min. Cache, Airbnb ruft ohnehin nur alle paar Stunden ab
     },
   });
 }
 
 // ---------------------------------------------------------------------------
-// Bestehender iCal-Proxy (Airbnb -> Website)
+// Bestehender iCal-Proxy (Airbnb -> Website), unverändert aus dem bisherigen
+// Worker übernommen.
 // ---------------------------------------------------------------------------
 
 async function handleIcalProxy(url) {
@@ -815,21 +883,63 @@ async function handleIcalProxy(url) {
   } catch (err) {
     return new Response('Fetch failed: ' + err.message, { status: 502 });
   }
-}// ---------------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
 // DATEV-Automatik: Rechnungen (Anzahlung + Restzahlung) für bestätigte
 // Buchungen automatisch als PDF an das DATEV-Einlese-Postfach senden.
 //
-// WICHTIG — bewusste Verzögerung bis zum Anreisedatum:
-// Eine Buchung gilt aus Sicht dieser Automatik erst als "endgültig" (nicht
-// mehr stornierbar), sobald das Anreisedatum erreicht oder überschritten ist.
-// Erst DANN werden fällige, bereits bezahlte Anzahlungen/Restzahlungen als
-// Rechnung erzeugt und an DATEV gemeldet — nie vorher, auch wenn die Zahlung
-// selbst schon vorher eingegangen ist.
+// TIMING-REGEL (Stand: überarbeitet, ersetzt die alte "warte bis Anreise"-Logik):
+// Eine Zahlung wird an DATEV gemeldet, sobald der SPÄTERE der beiden folgenden
+// Zeitpunkte erreicht ist:
+//   (a) 3 Tage nach dem Zeitpunkt, an dem die Zahlung im System als "bezahlt"
+//       markiert wurde (kleiner Sicherheitspuffer für Korrekturen/Rückbuchungen)
+//   (b) DATEV_SAFE_TO_SEND_DAYS_BEFORE_CHECKIN Tage vor Anreise — angelehnt an
+//       die eigene Stornobedingung (aktuell: freie Stornierung bis 30 Tage vor
+//       Anreise). Erst ab diesem Punkt gilt die Buchung als praktisch nicht
+//       mehr kostenlos stornierbar.
 //
-// Die Kaution ("deposit") ist ausdrücklich NICHT Teil dieser Automatik.
+// Das löst zwei Probleme der alten Regel:
+// - Buchungen, bei denen Anzahlung und Restzahlung in unterschiedlichen
+//   Kalenderjahren geleistet werden (z. B. Anzahlung im Dezember, Anreise im
+//   Februar), werden nicht mehr fälschlich komplett ins Anreise-Jahr verschoben.
+// - Trotzdem wird nie gemeldet, solange der Gast laut eigener Stornobedingung
+//   noch kostenlos stornieren könnte.
+//
+// WICHTIG für den Steuerberater: Das tatsächliche Zahlungseingangsdatum (nicht
+// das Datum des DATEV-Versands) ist im PDF und im Mailtext explizit als
+// "Zahlungseingang" ausgewiesen — das ist bei Ist-Versteuerung das Jahr, dem
+// die Einnahme zuzurechnen ist. Eine spätere Stornierung/Rückerstattung nach
+// bereits erfolgter Meldung ist normal und wird im Jahr der Rückzahlung als
+// Korrektur erfasst — sie macht die Vorjahresmeldung nicht ungültig.
+//
+// Die Kaution ("deposit") ist ausdrücklich NICHT Teil dieser Automatik — sie
+// ist rückzahlbar und stellt keinen steuerpflichtigen Umsatz dar.
 // ---------------------------------------------------------------------------
 
-const DATEV_UPLOAD_EMAIL = '5f7f7361-efe5-4cad-8db0-a0849c883227@uploadmail.datev.de';
+const DATEV_SAFE_TO_SEND_DAYS_BEFORE_CHECKIN = 30;
+const DATEV_DAYS_AFTER_PAYMENT_BUFFER = 3;
+
+// Standard-Adresse, falls in den Einstellungen noch keine eigene hinterlegt
+// wurde. Im Admin-Tool (Tab Einstellungen) editierbar, falls DATEV euch mal
+// eine neue Upload-Adresse zuweist.
+const DEFAULT_DATEV_UPLOAD_EMAIL = '5f7f7361-efe5-4cad-8db0-a0849c883227@uploadmail.datev.de';
+
+async function getDatevEmail(env) {
+  const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'datev_email'`).first();
+  if (!row) return DEFAULT_DATEV_UPLOAD_EMAIL;
+  try {
+    const parsed = JSON.parse(row.value_json);
+    return (parsed && parsed.trim()) ? parsed.trim() : DEFAULT_DATEV_UPLOAD_EMAIL;
+  } catch (e) {
+    return DEFAULT_DATEV_UPLOAD_EMAIL;
+  }
+}
+
+// Absenderadresse für automatische DATEV-Mails. Muss auf der bei Cloudflare
+// Email Service "onboardeten" Sende-Domain liegen (greenhouse-fuerstenberg.de) —
+// NICHT die private/geschäftliche ProtonMail-Adresse, da Cloudflare nur von
+// freigeschalteten eigenen Domains aus versenden kann.
 const DATEV_SENDER_EMAIL = 'buchhaltung@greenhouse-fuerstenberg.de';
 
 // Liefert das heutige Datum als 'YYYY-MM-DD' — bewusst in deutscher Zeit
@@ -839,6 +949,16 @@ const DATEV_SENDER_EMAIL = 'buchhaltung@greenhouse-fuerstenberg.de';
 // würde z. B. kurz nach deutscher Mitternacht UTC noch den Vortag zeigen).
 function todayStr() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Berlin' });
+}
+
+// Addiert (oder subtrahiert, bei negativem days) eine Anzahl Tage zu einem
+// 'YYYY-MM-DD'-Datum und gibt das Ergebnis wieder als 'YYYY-MM-DD' zurück.
+// Rechnet bewusst in UTC-Mittagsstunden intern (Kalendertag-Arithmetik, keine
+// Uhrzeit-Feinheiten nötig, da beide Werte immer reine Datumsangaben sind).
+function addDaysToDateStr(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().split('T')[0];
 }
 
 async function getCompanyInfo(env) {
@@ -863,6 +983,8 @@ async function getWifiInfo(env) {
   }
 }
 
+// Wandelt PDF-Bytes (Uint8Array) in einen Base64-String um — in Stücken, damit
+// auch größere PDFs nicht am Aufruf-Stack-Limit von String.fromCharCode scheitern.
 function bytesToBase64(bytes) {
   let binary = '';
   const chunkSize = 0x8000;
@@ -873,7 +995,10 @@ function bytesToBase64(bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// Mailversand über Resend
+// Mailversand über Resend (kostenlose Alternative zu Cloudflare Email Service
+// mit Workers Paid Plan). Erwartet ein Secret env.RESEND_API_KEY
+// (einrichten mit: wrangler secret put RESEND_API_KEY).
+// Anhänge: [{ content: <base64-String>, filename: 'datei.pdf' }]
 // ---------------------------------------------------------------------------
 async function sendMail(env, { to, from, bcc, subject, text, attachments }) {
   const body = {
@@ -903,9 +1028,13 @@ async function sendMail(env, { to, from, bcc, subject, text, attachments }) {
 
 const WOHNUNG_LABELS = { wohnung1: 'Wohnung I', wohnung2: 'Wohnung II', both: 'Beide Wohnungen' };
 
-async function buildDatevInvoicePdf({ invoiceId, guestName, guestAddress, wohnung, checkIn, checkOut, description, amount, invoiceDate, companyInfo }) {
+// Erstellt ein schlankes, einseitiges Rechnungs-PDF für eine einzelne
+// Zahlungs-Position (Anzahlung ODER Restzahlung). Bewusst einfacher gehalten
+// als das Angebots-/Rechnungs-PDF im Frontend (jsPDF im Browser) — dieselbe
+// Bibliothek läuft nicht in Cloudflare Workers, daher hier "pdf-lib".
+async function buildDatevInvoicePdf({ invoiceId, guestName, guestAddress, wohnung, checkIn, checkOut, description, amount, invoiceDate, paidAtDate, companyInfo }) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595.28, 841.89]);
+  const page = pdfDoc.addPage([595.28, 841.89]); // A4 in Punkt
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const marginLeft = 50;
@@ -925,7 +1054,15 @@ async function buildDatevInvoicePdf({ invoiceId, guestName, guestAddress, wohnun
   draw('Brandenburger Straße 17, 16798 Fürstenberg/Havel', marginLeft, y); y -= 30;
 
   draw(`RECHNUNG ${invoiceId}`, marginLeft, y, { size: 13, bold: true }); y -= 18;
-  draw(`Rechnungsdatum: ${new Date(invoiceDate).toLocaleDateString('de-DE')}`, marginLeft, y); y -= 24;
+  draw(`Rechnungsdatum: ${new Date(invoiceDate).toLocaleDateString('de-DE')}`, marginLeft, y); y -= 14;
+  if (paidAtDate) {
+    // Für den Steuerberater: das tatsächliche Zahlungseingangsdatum, relevant
+    // für die Zuordnung zum richtigen Wirtschaftsjahr bei Ist-Versteuerung —
+    // kann vom Rechnungsdatum abweichen, falls die Meldung an DATEV bewusst
+    // verzögert wurde (Stornofrist-Sicherheitspuffer).
+    draw(`Zahlungseingang: ${new Date(paidAtDate).toLocaleDateString('de-DE')}`, marginLeft, y, { bold: true }); y -= 14;
+  }
+  y -= 10;
 
   draw('Rechnungsempfänger:', marginLeft, y, { bold: true }); y -= 14;
   draw(guestName || '', marginLeft, y); y -= 14;
@@ -964,9 +1101,154 @@ async function buildDatevInvoicePdf({ invoiceId, guestName, guestAddress, wohnun
   return await pdfDoc.save();
 }
 
+// Erzeugt ein vollständiges Rechnungs-PDF mit ALLEN Posten (nicht nur einer
+// einzelnen Anzahlung/Restzahlung) — genutzt für den manuellen DATEV-Versand
+// beliebiger, bereits im System vorhandener Rechnungen (Tab "Rechnungen").
+async function buildGeneralInvoicePdf({ invoiceId, guestName, guestAddress, invoiceDate, items, discountPercent, rawNet, discountAmount, net, vatRate, vatAmount, gross, notes, companyInfo }) {
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([595.28, 841.89]);
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const marginLeft = 50;
+  const pageWidth = 595.28;
+  let y = 790;
+
+  const draw = (text, x, yPos, opts = {}) => {
+    page.drawText(String(text ?? ''), {
+      x, y: yPos,
+      size: opts.size || 10,
+      font: opts.bold ? bold : font,
+      color: rgb(0.12, 0.12, 0.12),
+    });
+  };
+
+  draw('Greenhouse Market GbR', marginLeft, y, { size: 14, bold: true }); y -= 18;
+  draw('Brandenburger Straße 17, 16798 Fürstenberg/Havel', marginLeft, y); y -= 30;
+
+  draw(`RECHNUNG ${invoiceId}`, marginLeft, y, { size: 13, bold: true }); y -= 18;
+  draw(`Rechnungsdatum: ${new Date(invoiceDate).toLocaleDateString('de-DE')}`, marginLeft, y); y -= 24;
+
+  draw('Rechnungsempfänger:', marginLeft, y, { bold: true }); y -= 14;
+  draw(guestName || '', marginLeft, y); y -= 14;
+  for (const line of (guestAddress || '').split('\n')) {
+    if (!line) continue;
+    draw(line, marginLeft, y); y -= 14;
+  }
+  y -= 16;
+
+  draw('Pos.', marginLeft, y, { bold: true });
+  draw('Beschreibung', marginLeft + 40, y, { bold: true });
+  draw('Menge', pageWidth - 210, y, { bold: true });
+  draw('Einzelpreis', pageWidth - 155, y, { bold: true });
+  draw('Betrag', pageWidth - 80, y, { bold: true });
+  y -= 8;
+  page.drawLine({ start: { x: marginLeft, y }, end: { x: pageWidth - 50, y }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+  y -= 16;
+
+  (items || []).forEach((item, idx) => {
+    const qty = item.quantity ?? 1;
+    const unitPrice = item.unitPrice ?? item.amount ?? 0;
+    const lineTotal = item.amount !== undefined && item.quantity === undefined ? item.amount : qty * unitPrice;
+    draw(String(idx + 1), marginLeft, y);
+    draw(item.description || '', marginLeft + 40, y);
+    draw(String(qty), pageWidth - 210, y);
+    draw(`${Number(unitPrice).toFixed(2)} €`, pageWidth - 155, y);
+    draw(`${Number(lineTotal).toFixed(2)} €`, pageWidth - 80, y);
+    y -= 16;
+  });
+
+  y -= 8;
+  page.drawLine({ start: { x: marginLeft, y: y + 8 }, end: { x: pageWidth - 50, y: y + 8 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+  y -= 10;
+
+  draw(`Zwischensumme: ${Number(rawNet).toFixed(2)} €`, pageWidth - 220, y); y -= 14;
+  if (discountPercent > 0) {
+    draw(`Rabatt (${discountPercent}%): -${Number(discountAmount).toFixed(2)} €`, pageWidth - 220, y); y -= 14;
+  }
+  if (vatRate > 0) {
+    draw(`Netto: ${Number(net).toFixed(2)} €`, pageWidth - 220, y); y -= 14;
+    draw(`zzgl. ${(vatRate * 100).toFixed(0)}% USt: ${Number(vatAmount).toFixed(2)} €`, pageWidth - 220, y); y -= 14;
+  } else {
+    draw('Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.', marginLeft, y); y -= 14;
+  }
+  draw(`Gesamtbetrag: ${Number(gross).toFixed(2)} €`, pageWidth - 220, y, { bold: true, size: 12 }); y -= 34;
+
+  if (notes) {
+    draw(notes, marginLeft, y); y -= 20;
+  }
+
+  draw('Zahlungsdaten:', marginLeft, y, { bold: true }); y -= 14;
+  draw(`IBAN: ${companyInfo.iban || '-'}`, marginLeft, y); y -= 14;
+  draw(`BIC: ${companyInfo.bic || '-'}`, marginLeft, y); y -= 14;
+  draw(`Verwendungszweck: ${invoiceId}`, marginLeft, y); y -= 24;
+
+  if (companyInfo.taxId) { draw(`USt-IdNr. gem. § 27a UStG: ${companyInfo.taxId}`, marginLeft, y); y -= 14; }
+  if (companyInfo.registerNr) { draw(`Unternehmensregisternr.: ${companyInfo.registerNr}`, marginLeft, y); }
+
+  return await pdfDoc.save();
+}
+
+// Manueller DATEV-Versand einer beliebigen, bereits vorhandenen Rechnung —
+// unabhängig von der automatischen Anzahlung/Restzahlung-Buchungslogik. Für
+// Sonderfälle, in denen von Hand nachgereicht werden muss.
+async function sendInvoiceToDatevManually(env, invoiceId) {
+  const invoice = await getRow(env, 'invoices', invoiceId);
+  if (!invoice) throw new Error('Rechnung nicht gefunden');
+
+  const companyInfo = await getCompanyInfo(env);
+  const datevEmail = await getDatevEmail(env);
+  const items = JSON.parse(invoice.items_json || '[]');
+
+  const pdfBytes = await buildGeneralInvoicePdf({
+    invoiceId: invoice.id,
+    guestName: invoice.guest_name,
+    guestAddress: invoice.guest_address,
+    invoiceDate: invoice.invoice_date,
+    items,
+    discountPercent: invoice.discount_percent,
+    rawNet: invoice.raw_net,
+    discountAmount: invoice.discount_amount,
+    net: invoice.net,
+    vatRate: invoice.vat_rate,
+    vatAmount: invoice.vat_amount,
+    gross: invoice.gross,
+    notes: invoice.notes,
+    companyInfo,
+  });
+  const base64Pdf = bytesToBase64(pdfBytes);
+
+  await sendMail(env, {
+    to: datevEmail,
+    from: DATEV_SENDER_EMAIL,
+    subject: `Rechnung ${invoice.id} – Greenhouse Market GbR (manueller Versand)`,
+    text:
+      `Manueller DATEV-Beleg-Upload.\n\n` +
+      `Rechnung: ${invoice.id}\n` +
+      `Gast: ${invoice.guest_name}\n` +
+      `Rechnungsdatum: ${new Date(invoice.invoice_date).toLocaleDateString('de-DE')}\n` +
+      `Betrag: ${Number(invoice.gross).toFixed(2)} €\n` +
+      `Quelle: ${invoice.source_ref || '-'}`,
+    attachments: [{ content: base64Pdf, filename: `${invoice.id}.pdf` }],
+  });
+
+  await env.DB.prepare(`UPDATE invoices SET datev_sent_at = ? WHERE id = ?`)
+    .bind(new Date().toISOString(), invoice.id).run();
+
+  return invoice.id;
+}
+
+// Erstellt EINMALIG eine Rechnung für eine Zahlungs-Position (Anzahlung/
+// Restzahlung) einer Buchung — oder gibt die bereits vorhandene zurück, falls
+// z. B. die Restzahlungs-Erinnerung sie schon früher angelegt hat. So bekommt
+// dieselbe Zahlungs-Position nie zwei verschiedene Rechnungsnummern, egal ob
+// zuerst die Erinnerung oder zuerst der DATEV-Export läuft.
 async function ensureLegInvoice(env, booking, leg) {
   const isDownpayment = leg === 'downpayment';
 
+  // Nur die Restzahlung wird aktuell schon vor Fälligkeit (bei der
+  // Erinnerungsmail) in Rechnung gestellt — daher nur dort ein Wiederverwenden
+  // über die Buchung selbst möglich. Für die Anzahlung gibt es keine
+  // vergleichbare Vor-Erstellung, daher wird hier immer neu angelegt.
   if (!isDownpayment && booking.remaining_invoice_id) {
     const existing = await getRow(env, 'invoices', booking.remaining_invoice_id);
     if (existing) {
@@ -977,6 +1259,7 @@ async function ensureLegInvoice(env, booking, leg) {
         invoiceDate: existing.invoice_date,
       };
     }
+    // Datensatz wurde zwischenzeitlich gelöscht -> unten neu anlegen.
   }
 
   const amount = isDownpayment ? booking.down_payment : booking.remaining;
@@ -984,6 +1267,8 @@ async function ensureLegInvoice(env, booking, leg) {
     ? `Anzahlung für Aufenthalt ${booking.check_in} bis ${booking.check_out}`
     : `Restzahlung für Aufenthalt ${booking.check_in} bis ${booking.check_out}`;
   const invoiceDate = todayStr();
+  // Suffix A/B verhindert Kollisionen, falls Anzahlung und Restzahlung
+  // derselben Buchung im selben Lauf (also derselben Sekunde) erzeugt werden.
   const newInvoiceId = `RE-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}${isDownpayment ? 'A' : 'B'}`;
   const items = [{ description, amount }];
 
@@ -1014,6 +1299,8 @@ async function ensureLegInvoice(env, booking, leg) {
 async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
   const isDownpayment = leg === 'downpayment';
   const { invoiceId: newInvoiceId, amount, description, invoiceDate } = await ensureLegInvoice(env, booking, leg);
+  const paidAtDate = isDownpayment ? booking.down_payment_paid_at : booking.remaining_paid_at;
+  const datevEmail = await getDatevEmail(env);
 
   const pdfBytes = await buildDatevInvoicePdf({
     invoiceId: newInvoiceId,
@@ -1025,12 +1312,13 @@ async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
     description,
     amount,
     invoiceDate,
+    paidAtDate,
     companyInfo,
   });
   const base64Pdf = bytesToBase64(pdfBytes);
 
   await sendMail(env, {
-    to: DATEV_UPLOAD_EMAIL,
+    to: datevEmail,
     from: DATEV_SENDER_EMAIL,
     subject: `Rechnung ${newInvoiceId} – Greenhouse Market GbR`,
     text:
@@ -1040,7 +1328,8 @@ async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
       `Gast: ${booking.guest_name}\n` +
       `Zeitraum: ${booking.check_in} bis ${booking.check_out}\n` +
       `Betrag: ${amount.toFixed(2)} €\n` +
-      `Art: ${isDownpayment ? 'Anzahlung' : 'Restzahlung'}`,
+      `Art: ${isDownpayment ? 'Anzahlung' : 'Restzahlung'}\n` +
+      (paidAtDate ? `Zahlungseingang: ${new Date(paidAtDate).toLocaleDateString('de-DE')} (relevant für Ist-Versteuerung/Zuordnung zum Wirtschaftsjahr)\n` : ''),
     attachments: [
       {
         content: base64Pdf,
@@ -1056,22 +1345,49 @@ async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
   return newInvoiceId;
 }
 
+// Ermittelt eine einzelne Zahlungs-Position als "fällig für DATEV", sobald der
+// SPÄTERE der beiden Zeitpunkte erreicht ist: 3 Tage nach Zahlungseingang,
+// oder DATEV_SAFE_TO_SEND_DAYS_BEFORE_CHECKIN Tage vor Anreise (= eigene
+// Stornofrist-Grenze). Siehe Kommentarblock oben für die Begründung.
+function isLegDueForDatev(booking, leg) {
+  const isDownpayment = leg === 'downpayment';
+  const paidAt = isDownpayment ? booking.down_payment_paid_at : booking.remaining_paid_at;
+  // Sicherheitsfallback für ältere Datensätze ohne Zeitstempel (z. B. vor
+  // Einführung dieser Spalte bereits als bezahlt markiert): Datum der
+  // Buchungserstellung verwenden, damit sie nicht dauerhaft "hängen bleiben".
+  const paidAtStr = paidAt ? paidAt.split(' ')[0].split('T')[0] : (booking.created_at || todayStr()).split(' ')[0];
+
+  const sendAfterPayment = addDaysToDateStr(paidAtStr, DATEV_DAYS_AFTER_PAYMENT_BUFFER);
+  const sendAfterCancellationSafe = addDaysToDateStr(booking.check_in, -DATEV_SAFE_TO_SEND_DAYS_BEFORE_CHECKIN);
+  const sendDate = sendAfterPayment > sendAfterCancellationSafe ? sendAfterPayment : sendAfterCancellationSafe;
+
+  return todayStr() >= sendDate;
+}
+
+// Ermittelt alle fälligen Positionen (Anzahlung/Restzahlung bereits bezahlt,
+// Sicherheitsfrist abgelaufen, noch nicht an DATEV gemeldet) und verschickt sie.
+// dryRun=true: nur ermitteln, nichts verschicken/verändern (für die Vorschau).
 async function runDatevExport(env, dryRun = false) {
-  const today = todayStr();
   const companyInfo = dryRun ? null : await getCompanyInfo(env);
 
-  const { results: dueBookings } = await env.DB.prepare(
-    `SELECT * FROM bookings WHERE status != 'cancelled' AND check_in <= ?`
-  ).bind(today).all();
+  const { results: candidateBookings } = await env.DB.prepare(
+    `SELECT * FROM bookings WHERE status != 'cancelled'
+     AND (
+       (down_payment_paid = 1 AND datev_downpayment_sent_at IS NULL)
+       OR
+       (remaining_paid = 1 AND datev_remaining_sent_at IS NULL)
+     )`
+  ).all();
 
-  const report = { checkedBookings: dueBookings.length, sent: [], due: [] };
+  const report = { checkedBookings: candidateBookings.length, sent: [], due: [] };
 
-  for (const b of dueBookings) {
-    const legsToSend = [];
-    if (b.down_payment_paid && b.down_payment > 0 && !b.datev_downpayment_sent_at) legsToSend.push('downpayment');
-    if (b.remaining_paid && b.remaining > 0 && !b.datev_remaining_sent_at) legsToSend.push('remaining');
+  for (const b of candidateBookings) {
+    const legsToCheck = [];
+    if (b.down_payment_paid && b.down_payment > 0 && !b.datev_downpayment_sent_at) legsToCheck.push('downpayment');
+    if (b.remaining_paid && b.remaining > 0 && !b.datev_remaining_sent_at) legsToCheck.push('remaining');
 
-    for (const leg of legsToSend) {
+    for (const leg of legsToCheck) {
+      if (!isLegDueForDatev(b, leg)) continue;
       report.due.push({ bookingId: b.id, guestName: b.guest_name, checkIn: b.check_in, checkOut: b.check_out, leg });
       if (!dryRun) {
         const invoiceId = await sendDatevInvoiceForLeg(env, b, leg, companyInfo);
@@ -1085,12 +1401,20 @@ async function runDatevExport(env, dryRun = false) {
 
 // ---------------------------------------------------------------------------
 // Automatische Restzahlungs-Erinnerung
+//
+// Erinnert Gast UND Betreiber (per BCC) per Mail an die noch offene
+// Restzahlung — einmal zum Fälligkeitstermin (Standard: 14 Tage vor Anreise,
+// passend zur Stornobedingung "< 15 Tage = 100% Stornogebühr") und ein
+// weiteres Mal als letzte Erinnerung kurz vor Anreise (Standard: 3 Tage
+// vorher). Bereits bezahlte oder stornierte Buchungen werden ausgelassen.
 // ---------------------------------------------------------------------------
 
 const REMAINING_DUE_DAYS_BEFORE_CHECKIN = 14;
 const REMAINING_FINAL_REMINDER_DAYS_BEFORE_CHECKIN = 3;
 const REMINDER_SENDER_EMAIL = 'info@greenhouse-fuerstenberg.de';
 
+// Anzahl ganzer Tage zwischen heute (UTC) und einem 'YYYY-MM-DD'-Datum.
+// Positiv = Datum liegt in der Zukunft.
 function daysUntil(dateStr) {
   const today = new Date(todayStr() + 'T00:00:00Z');
   const target = new Date(dateStr + 'T00:00:00Z');
@@ -1135,6 +1459,9 @@ async function sendRemainingReminder(env, booking, isFinal, companyInfo) {
     ? `Letzte Erinnerung: Restzahlung für Ihren Aufenthalt (${booking.check_in} – ${booking.check_out})`
     : `Erinnerung: Restzahlung für Ihren Aufenthalt (${booking.check_in} – ${booking.check_out})`;
 
+  // Erzeugt beim ersten Mal die Restzahlungs-Rechnung (oder holt sie, falls durch
+  // eine vorherige Erinnerung bereits angelegt) und hängt sie als PDF an. Die
+  // DATEV-Automatik verwendet später dieselbe Rechnungsnummer weiter.
   const { invoiceId, amount, description, invoiceDate } = await ensureLegInvoice(env, booking, 'remaining');
   const pdfBytes = await buildDatevInvoicePdf({
     invoiceId,
@@ -1168,6 +1495,7 @@ async function sendRemainingReminder(env, booking, isFinal, companyInfo) {
   await env.DB.prepare(`UPDATE bookings SET ${column} = ? WHERE id = ?`).bind(new Date().toISOString(), booking.id).run();
 }
 
+// dryRun=true: nur ermitteln, was fällig wäre, ohne etwas zu verschicken.
 async function runRemainingReminders(env, dryRun = false) {
   const companyInfo = dryRun ? null : await getCompanyInfo(env);
 
@@ -1186,6 +1514,9 @@ async function runRemainingReminders(env, dryRun = false) {
     const isFinalWindow = daysLeft <= REMAINING_FINAL_REMINDER_DAYS_BEFORE_CHECKIN;
     const isDueWindow = daysLeft <= REMAINING_DUE_DAYS_BEFORE_CHECKIN;
 
+    // Falls eine Buchung sehr kurzfristig erstellt wurde (schon im "letzte
+    // Erinnerung"-Fenster) wird NUR die finale Erinnerung verschickt, nicht
+    // zusätzlich noch die reguläre — sonst kämen an einem Tag zwei Mails.
     if (isFinalWindow && !b.remaining_final_reminder_sent_at) {
       report.due.push({ bookingId: b.id, guestName: b.guest_name, checkIn: b.check_in, type: 'final' });
       if (!dryRun) {
@@ -1205,7 +1536,9 @@ async function runRemainingReminders(env, dryRun = false) {
   }
 
   return report;
-}// ---------------------------------------------------------------------------
+}
+
+// ---------------------------------------------------------------------------
 // Automatische Begrüßungsmail
 //
 // Wird einmalig ca. 5 Tage vor Anreise an den Gast verschickt — mit Anrede
@@ -1217,6 +1550,9 @@ const WELCOME_EMAIL_DAYS_BEFORE_CHECKIN = 5;
 const WELCOME_EMAIL_SENDER = 'info@greenhouse-fuerstenberg.de';
 const PROPERTY_ADDRESS = 'Brandenburger Straße 17, 16798 Fürstenberg/Havel';
 
+// Nimmt den ersten "Wort"-Teil eines vollen Namens als informelle Anrede —
+// funktioniert auch bei Doppelnamen mit Bindestrich (z. B. "Carl-August"),
+// da nur am ersten LEERZEICHEN getrennt wird, nicht am Bindestrich.
 function firstNameOf(fullName) {
   const trimmed = (fullName || '').trim();
   if (!trimmed) return 'Gast';
@@ -1229,29 +1565,48 @@ function formatGermanDate(dateStr) {
   });
 }
 
-function buildWelcomeEmailText({ firstName, checkInFormatted, wifiInfo }) {
-  return `Hallo ${firstName},
+const DEFAULT_WELCOME_EMAIL_TEMPLATE = `Hallo {{vorname}},
 
-dein Aufenthalt findet bald statt. Du kannst am ${checkInFormatted} ab 15:00 Uhr jederzeit einchecken.
+dein Aufenthalt findet bald statt. Du kannst am {{datum}} ab 15:00 Uhr jederzeit einchecken.
 
 Weißt du schon, wann du ungefähr ankommen wirst?
 
 Hier ist die Adresse:
-${PROPERTY_ADDRESS}
+{{adresse}}
 
 Hier sind die WLAN-Zugangsdaten:
-Name: ${wifiInfo.name}
-Passwort: ${wifiInfo.password || '[bitte in den Einstellungen hinterlegen]'}
+Name: {{wlan_name}}
+Passwort: {{wlan_passwort}}
 
-Wenn du Fragen hast, gib uns gerne Bescheid.
+Wenn du Fragen hast, gib mir gern Bescheid.
 
 Liebe Grüße
-Lucia und Jan 
-Greenhouse Fürstenberg `;
+Lucia und Jan`;
+
+async function getWelcomeEmailTemplate(env) {
+  const row = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'welcome_email_template'`).first();
+  if (!row) return DEFAULT_WELCOME_EMAIL_TEMPLATE;
+  try {
+    const parsed = JSON.parse(row.value_json);
+    return parsed || DEFAULT_WELCOME_EMAIL_TEMPLATE;
+  } catch (e) {
+    return DEFAULT_WELCOME_EMAIL_TEMPLATE;
+  }
 }
 
-async function sendWelcomeEmail(env, booking, wifiInfo, companyInfo) {
-  const text = buildWelcomeEmailText({
+// Ersetzt die {{platzhalter}} in der (im Admin-Tool editierbaren) Vorlage durch
+// die tatsächlichen Werte der jeweiligen Buchung.
+function fillWelcomeEmailTemplate(template, { firstName, checkInFormatted, wifiInfo }) {
+  return template
+    .replaceAll('{{vorname}}', firstName)
+    .replaceAll('{{datum}}', checkInFormatted)
+    .replaceAll('{{adresse}}', PROPERTY_ADDRESS)
+    .replaceAll('{{wlan_name}}', wifiInfo.name)
+    .replaceAll('{{wlan_passwort}}', wifiInfo.password || '[bitte in den Einstellungen hinterlegen]');
+}
+
+async function sendWelcomeEmail(env, booking, wifiInfo, companyInfo, template) {
+  const text = fillWelcomeEmailTemplate(template, {
     firstName: firstNameOf(booking.guest_name),
     checkInFormatted: formatGermanDate(booking.check_in),
     wifiInfo,
@@ -1269,9 +1624,11 @@ async function sendWelcomeEmail(env, booking, wifiInfo, companyInfo) {
     .bind(new Date().toISOString(), booking.id).run();
 }
 
+// dryRun=true: nur ermitteln, was fällig wäre, ohne etwas zu verschicken.
 async function runWelcomeEmails(env, dryRun = false) {
   const wifiInfo = dryRun ? null : await getWifiInfo(env);
   const companyInfo = dryRun ? null : await getCompanyInfo(env);
+  const template = dryRun ? null : await getWelcomeEmailTemplate(env);
 
   const { results: candidates } = await env.DB.prepare(
     `SELECT * FROM bookings
@@ -1287,7 +1644,7 @@ async function runWelcomeEmails(env, dryRun = false) {
     if (daysLeft <= WELCOME_EMAIL_DAYS_BEFORE_CHECKIN) {
       report.due.push({ bookingId: b.id, guestName: b.guest_name, checkIn: b.check_in });
       if (!dryRun) {
-        await sendWelcomeEmail(env, b, wifiInfo, companyInfo);
+        await sendWelcomeEmail(env, b, wifiInfo, companyInfo, template);
         report.sent.push({ bookingId: b.id });
       }
     }
@@ -1364,6 +1721,17 @@ export default {
         const report = await runDatevExport(env, false);
         return jsonResponse(report);
       }
+      const manualDatevMatch = path.match(/^\/api\/datev\/send-invoice\/([^/]+)$/);
+      if (manualDatevMatch && method === 'POST') {
+        const authFail = await requireAuth(request, env);
+        if (authFail) return authFail;
+        try {
+          const invoiceId = await sendInvoiceToDatevManually(env, manualDatevMatch[1]);
+          return jsonResponse({ sent: true, invoiceId });
+        } catch (err) {
+          return errorResponse('DATEV-Versand fehlgeschlagen: ' + err.message, 500);
+        }
+      }
 
       if (path === '/api/retention/preview' && method === 'GET') return await handleRetentionPreview(request, env);
       if (path === '/api/retention/run' && method === 'POST') return await handleRetentionRun(request, env);
@@ -1403,7 +1771,11 @@ export default {
     }
   },
 
+  // Wird automatisch per Cron Trigger ausgeführt (siehe wrangler.jsonc).
+  // Es können mehrere Cron-Ausdrücke registriert sein — controller.cron
+  // verrät, welcher gerade ausgelöst hat, damit wir hier unterscheiden können.
   async scheduled(controller, env, ctx) {
+    // Täglicher DATEV-Export + Restzahlungs-Erinnerungen (neuer Cron, z. B. "0 4 * * *").
     if (controller.cron === '0 4 * * *') {
       const datevReport = await runDatevExport(env, false);
       console.log(
@@ -1425,6 +1797,9 @@ export default {
       return;
     }
 
+    // Bestehender wöchentlicher Cron: Löschkonzept + Backup. Löscht/anonymisiert
+    // Daten gemäß Löschkonzept. Rechnungen sind davon ausdrücklich NIE
+    // betroffen (10 Jahre Pflichtaufbewahrung nach § 147 AO).
     const report = await runRetentionCleanup(env, false);
     console.log(
       `Löschkonzept ausgeführt: ${report.staleInquiries.length} Anfragen gelöscht, ` +
