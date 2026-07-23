@@ -97,6 +97,18 @@ function boolToInt(v) {
   return v ? 1 : 0;
 }
 
+// Vergibt EINMALIG eine fortlaufende, für Menschen lesbare Nummer (z. B.
+// RE-2026-0001 / AN-2026-0001) — wird bei Erstellung in der Datenbank
+// gespeichert (Spalte display_number) und danach nie mehr automatisch
+// verändert. So sehen Buchungstool UND alle automatisch/manuell versendeten
+// PDFs garantiert dieselbe Nummer für dieselbe Rechnung/Angebot.
+async function nextDisplayNumber(env, table, prefix, yearSource) {
+  const row = await env.DB.prepare(`SELECT COUNT(*) as c FROM ${table}`).first();
+  const seq = (row?.c || 0) + 1;
+  const year = yearSource ? new Date(yearSource).getFullYear() : new Date().getFullYear();
+  return `${prefix}-${year}-${String(seq).padStart(4, '0')}`;
+}
+
 // ---------------------------------------------------------------------------
 // Gäste
 // ---------------------------------------------------------------------------
@@ -313,15 +325,16 @@ async function handleOffers(request, env, method, id) {
   if (method === 'POST') {
     const o = await request.json();
     const newId = o.id || `ANG-${Date.now()}`;
+    const displayNumber = o.displayNumber || await nextDisplayNumber(env, 'offers', 'AN', null);
     await env.DB.prepare(
       `INSERT INTO offers (
-        id, guest_id, source_inquiry_id, guest_name, guest_email, guest_phone, guest_address,
+        id, display_number, guest_id, source_inquiry_id, guest_name, guest_email, guest_phone, guest_address,
         wohnung, check_in, check_out, persons, early_checkin, late_checkout, final_cleaning,
         dog_fee, dog_count, projekt_space, projekt_space_cleaning, discount_percent,
         total, nights, status
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
-      newId, o.guestId || null, o.sourceInquiryId || null, o.guestName, o.guestEmail,
+      newId, displayNumber, o.guestId || null, o.sourceInquiryId || null, o.guestName, o.guestEmail,
       o.guestPhone || '', o.guestAddress || '', o.wohnung, o.checkIn, o.checkOut, o.persons || 1,
       boolToInt(o.earlyCheckin), boolToInt(o.lateCheckout), boolToInt(o.finalCleaning),
       boolToInt(o.dogFee), o.dogCount || 1, boolToInt(o.projektSpace), boolToInt(o.projektSpaceCleaning),
@@ -356,18 +369,20 @@ async function handleOffers(request, env, method, id) {
       total: o.total !== undefined ? o.total : existing.total,
       nights: o.nights !== undefined ? o.nights : existing.nights,
       status: o.status !== undefined ? o.status : existing.status,
+      display_number: o.displayNumber !== undefined && o.displayNumber.trim()
+        ? o.displayNumber.trim() : (existing.display_number || await nextDisplayNumber(env, 'offers', 'AN', null)),
     };
 
     await env.DB.prepare(
       `UPDATE offers SET guest_id=?, guest_name=?, guest_email=?, guest_phone=?, guest_address=?,
        wohnung=?, check_in=?, check_out=?, persons=?, early_checkin=?, late_checkout=?, final_cleaning=?,
        dog_fee=?, dog_count=?, projekt_space=?, projekt_space_cleaning=?, discount_percent=?,
-       total=?, nights=?, status=? WHERE id=?`
+       total=?, nights=?, status=?, display_number=? WHERE id=?`
     ).bind(
       merged.guest_id, merged.guest_name, merged.guest_email, merged.guest_phone, merged.guest_address,
       merged.wohnung, merged.check_in, merged.check_out, merged.persons, merged.early_checkin, merged.late_checkout,
       merged.final_cleaning, merged.dog_fee, merged.dog_count, merged.projekt_space, merged.projekt_space_cleaning,
-      merged.discount_percent, merged.total, merged.nights, merged.status, id
+      merged.discount_percent, merged.total, merged.nights, merged.status, merged.display_number, id
     ).run();
     return jsonResponse(await getRow(env, 'offers', id));
   }
@@ -396,14 +411,15 @@ async function handleInvoices(request, env, method, id) {
   if (method === 'POST') {
     const inv = await request.json();
     const newId = inv.id || `RE-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`;
+    const displayNumber = inv.displayNumber || await nextDisplayNumber(env, 'invoices', 'RE', inv.invoiceDate);
     await env.DB.prepare(
       `INSERT INTO invoices (
-        id, source_ref, wohnung, guest_name, guest_email, guest_address, invoice_date,
+        id, display_number, source_ref, wohnung, guest_name, guest_email, guest_address, invoice_date,
         service_start, service_end, items_json, vat_mode, discount_percent,
         raw_net, discount_amount, net, vat_rate, vat_amount, gross, notes, status
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
-      newId, inv.sourceRef || '', inv.wohnung || 'wohnung1', inv.guestName, inv.guestEmail,
+      newId, displayNumber, inv.sourceRef || '', inv.wohnung || 'wohnung1', inv.guestName, inv.guestEmail,
       inv.guestAddress, inv.invoiceDate, inv.serviceStart || '', inv.serviceEnd || '',
       JSON.stringify(inv.items || []), inv.vatMode || 'kleinunternehmer', inv.discountPercent || 0,
       inv.rawNet || 0, inv.discountAmount || 0, inv.net || 0, inv.vatRate || 0,
@@ -438,18 +454,20 @@ async function handleInvoices(request, env, method, id) {
       gross: inv.gross !== undefined ? inv.gross : existing.gross,
       notes: inv.notes !== undefined ? inv.notes : existing.notes,
       status: inv.status !== undefined ? inv.status : existing.status,
+      display_number: inv.displayNumber !== undefined && inv.displayNumber.trim()
+        ? inv.displayNumber.trim() : (existing.display_number || await nextDisplayNumber(env, 'invoices', 'RE', existing.invoice_date)),
     };
 
     await env.DB.prepare(
       `UPDATE invoices SET source_ref=?, wohnung=?, guest_name=?, guest_email=?, guest_address=?,
        invoice_date=?, service_start=?, service_end=?, items_json=?, vat_mode=?, discount_percent=?,
-       raw_net=?, discount_amount=?, net=?, vat_rate=?, vat_amount=?, gross=?, notes=?, status=?
+       raw_net=?, discount_amount=?, net=?, vat_rate=?, vat_amount=?, gross=?, notes=?, status=?, display_number=?
        WHERE id=?`
     ).bind(
       merged.source_ref, merged.wohnung, merged.guest_name, merged.guest_email, merged.guest_address,
       merged.invoice_date, merged.service_start, merged.service_end, merged.items_json, merged.vat_mode,
       merged.discount_percent, merged.raw_net, merged.discount_amount, merged.net, merged.vat_rate,
-      merged.vat_amount, merged.gross, merged.notes, merged.status, id
+      merged.vat_amount, merged.gross, merged.notes, merged.status, merged.display_number, id
     ).run();
     const updated = await getRow(env, 'invoices', id);
     return jsonResponse({ ...updated, items: JSON.parse(updated.items_json) });
@@ -1195,12 +1213,20 @@ async function sendInvoiceToDatevManually(env, invoiceId) {
   const invoice = await getRow(env, 'invoices', invoiceId);
   if (!invoice) throw new Error('Rechnung nicht gefunden');
 
+  // Falls diese Rechnung noch aus der Zeit vor Einführung der persistenten
+  // Anzeige-Nummer stammt, wird jetzt einmalig eine vergeben und gespeichert.
+  let displayNumber = invoice.display_number;
+  if (!displayNumber) {
+    displayNumber = await nextDisplayNumber(env, 'invoices', 'RE', invoice.invoice_date);
+    await env.DB.prepare(`UPDATE invoices SET display_number = ? WHERE id = ?`).bind(displayNumber, invoice.id).run();
+  }
+
   const companyInfo = await getCompanyInfo(env);
   const datevEmail = await getDatevEmail(env);
   const items = JSON.parse(invoice.items_json || '[]');
 
   const pdfBytes = await buildGeneralInvoicePdf({
-    invoiceId: invoice.id,
+    invoiceId: displayNumber,
     guestName: invoice.guest_name,
     guestAddress: invoice.guest_address,
     invoiceDate: invoice.invoice_date,
@@ -1220,15 +1246,15 @@ async function sendInvoiceToDatevManually(env, invoiceId) {
   await sendMail(env, {
     to: datevEmail,
     from: DATEV_SENDER_EMAIL,
-    subject: `Rechnung ${invoice.id} – Greenhouse Market GbR (manueller Versand)`,
+    subject: `Rechnung ${displayNumber} – Greenhouse Market GbR (manueller Versand)`,
     text:
       `Manueller DATEV-Beleg-Upload.\n\n` +
-      `Rechnung: ${invoice.id}\n` +
+      `Rechnung: ${displayNumber}\n` +
       `Gast: ${invoice.guest_name}\n` +
       `Rechnungsdatum: ${new Date(invoice.invoice_date).toLocaleDateString('de-DE')}\n` +
       `Betrag: ${Number(invoice.gross).toFixed(2)} €\n` +
       `Quelle: ${invoice.source_ref || '-'}`,
-    attachments: [{ content: base64Pdf, filename: `${invoice.id}.pdf` }],
+    attachments: [{ content: base64Pdf, filename: `${displayNumber}.pdf` }],
   });
 
   await env.DB.prepare(`UPDATE invoices SET datev_sent_at = ? WHERE id = ?`)
@@ -1254,6 +1280,7 @@ async function ensureLegInvoice(env, booking, leg) {
     if (existing) {
       return {
         invoiceId: existing.id,
+        displayNumber: existing.display_number || existing.id,
         amount: existing.gross,
         description: JSON.parse(existing.items_json)[0]?.description || (isDownpayment ? 'Anzahlung' : 'Restzahlung'),
         invoiceDate: existing.invoice_date,
@@ -1270,16 +1297,17 @@ async function ensureLegInvoice(env, booking, leg) {
   // Suffix A/B verhindert Kollisionen, falls Anzahlung und Restzahlung
   // derselben Buchung im selben Lauf (also derselben Sekunde) erzeugt werden.
   const newInvoiceId = `RE-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}${isDownpayment ? 'A' : 'B'}`;
+  const displayNumber = await nextDisplayNumber(env, 'invoices', 'RE', invoiceDate);
   const items = [{ description, amount }];
 
   await env.DB.prepare(
     `INSERT INTO invoices (
-      id, source_ref, wohnung, guest_name, guest_email, guest_address, invoice_date,
+      id, display_number, source_ref, wohnung, guest_name, guest_email, guest_address, invoice_date,
       service_start, service_end, items_json, vat_mode, discount_percent,
       raw_net, discount_amount, net, vat_rate, vat_amount, gross, notes, status
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(
-    newInvoiceId, `booking:${booking.id}`, booking.wohnung, booking.guest_name, booking.guest_email,
+    newInvoiceId, displayNumber, `booking:${booking.id}`, booking.wohnung, booking.guest_name, booking.guest_email,
     booking.guest_address || '', invoiceDate, booking.check_in, booking.check_out,
     JSON.stringify(items), 'kleinunternehmer', 0,
     amount, 0, amount, 0, 0, amount,
@@ -1292,17 +1320,17 @@ async function ensureLegInvoice(env, booking, leg) {
   const column = isDownpayment ? 'down_payment_invoice_id' : 'remaining_invoice_id';
   await env.DB.prepare(`UPDATE bookings SET ${column} = ? WHERE id = ?`).bind(newInvoiceId, booking.id).run();
 
-  return { invoiceId: newInvoiceId, amount, description, invoiceDate };
+  return { invoiceId: newInvoiceId, displayNumber, amount, description, invoiceDate };
 }
 
 async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
   const isDownpayment = leg === 'downpayment';
-  const { invoiceId: newInvoiceId, amount, description, invoiceDate } = await ensureLegInvoice(env, booking, leg);
+  const { invoiceId: newInvoiceId, displayNumber, amount, description, invoiceDate } = await ensureLegInvoice(env, booking, leg);
   const paidAtDate = isDownpayment ? booking.down_payment_paid_at : booking.remaining_paid_at;
   const datevEmail = await getDatevEmail(env);
 
   const pdfBytes = await buildDatevInvoicePdf({
-    invoiceId: newInvoiceId,
+    invoiceId: displayNumber,
     guestName: booking.guest_name,
     guestAddress: booking.guest_address,
     wohnung: booking.wohnung,
@@ -1319,10 +1347,10 @@ async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
   await sendMail(env, {
     to: datevEmail,
     from: DATEV_SENDER_EMAIL,
-    subject: `Rechnung ${newInvoiceId} – Greenhouse Market GbR`,
+    subject: `Rechnung ${displayNumber} – Greenhouse Market GbR`,
     text:
       `Automatischer DATEV-Beleg-Upload.\n\n` +
-      `Rechnung: ${newInvoiceId}\n` +
+      `Rechnung: ${displayNumber}\n` +
       `Buchung: ${booking.id}\n` +
       `Gast: ${booking.guest_name}\n` +
       `Zeitraum: ${booking.check_in} bis ${booking.check_out}\n` +
@@ -1332,7 +1360,7 @@ async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
     attachments: [
       {
         content: base64Pdf,
-        filename: `${newInvoiceId}.pdf`,
+        filename: `${displayNumber}.pdf`,
       },
     ],
   });
@@ -1341,7 +1369,7 @@ async function sendDatevInvoiceForLeg(env, booking, leg, companyInfo) {
   const column = isDownpayment ? 'datev_downpayment_sent_at' : 'datev_remaining_sent_at';
   await env.DB.prepare(`UPDATE bookings SET ${column} = ? WHERE id = ?`).bind(nowIso, booking.id).run();
 
-  return newInvoiceId;
+  return displayNumber;
 }
 
 // Ermittelt eine einzelne Zahlungs-Position als "fällig für DATEV", sobald der
@@ -1461,9 +1489,9 @@ async function sendRemainingReminder(env, booking, isFinal, companyInfo) {
   // Erzeugt beim ersten Mal die Restzahlungs-Rechnung (oder holt sie, falls durch
   // eine vorherige Erinnerung bereits angelegt) und hängt sie als PDF an. Die
   // DATEV-Automatik verwendet später dieselbe Rechnungsnummer weiter.
-  const { invoiceId, amount, description, invoiceDate } = await ensureLegInvoice(env, booking, 'remaining');
+  const { invoiceId, displayNumber, amount, description, invoiceDate } = await ensureLegInvoice(env, booking, 'remaining');
   const pdfBytes = await buildDatevInvoicePdf({
-    invoiceId,
+    invoiceId: displayNumber,
     guestName: booking.guest_name,
     guestAddress: booking.guest_address,
     wohnung: booking.wohnung,
@@ -1485,7 +1513,7 @@ async function sendRemainingReminder(env, booking, isFinal, companyInfo) {
     attachments: [
       {
         content: base64Pdf,
-        filename: `${invoiceId}.pdf`,
+        filename: `${displayNumber}.pdf`,
       },
     ],
   });
