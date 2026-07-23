@@ -867,6 +867,7 @@
                 datevDownpaymentSentAt: row.datev_downpayment_sent_at || null,
                 datevRemainingSentAt: row.datev_remaining_sent_at || null,
                 remainingInvoiceId: row.remaining_invoice_id || null,
+                downPaymentInvoiceId: row.down_payment_invoice_id || null,
                 welcomeEmailSentAt: row.welcome_email_sent_at || null,
                 status: row.status,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
@@ -4592,7 +4593,7 @@ Deutschland
                                 datevEvents.push({
                                     bookingId: b.id, guestName: b.guest.name, leg: 'Anzahlung',
                                     amount: b.downPayment, sentAt: b.datevDownpaymentSentAt,
-                                    checkIn: b.checkIn, checkOut: b.checkOut,
+                                    invoiceId: b.downPaymentInvoiceId, checkIn: b.checkIn, checkOut: b.checkOut,
                                 });
                             }
                             if (b.datevRemainingSentAt) {
