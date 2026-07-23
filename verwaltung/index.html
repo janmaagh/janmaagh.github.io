@@ -3111,9 +3111,13 @@ Deutschland
                     y += noteLines.length * 5 + 4;
                 }
 
-                ensureSpace(36);
-                doc.text('Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto (spätestens jedoch mit dem Anreisetag fällig):', marginLeft, y);
-                y += 6;
+                ensureSpace(40);
+                const paymentIntroLines = doc.splitTextToSize(
+                    'Bitte überweisen Sie den Betrag innerhalb von 14 Tagen ohne Abzug auf folgendes Konto (spätestens jedoch mit dem Anreisetag fällig):',
+                    contentWidth
+                );
+                doc.text(paymentIntroLines, marginLeft, y);
+                y += paymentIntroLines.length * 5 + 2;
                 doc.text('Greenhouse Market GbR', marginLeft, y);
                 y += 5;
                 doc.text(companyInfo.iban ? `IBAN: ${companyInfo.iban}` : 'IBAN: [bitte in den Einstellungen eintragen]', marginLeft, y);
