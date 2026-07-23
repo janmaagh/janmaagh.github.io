@@ -763,6 +763,7 @@
                 gross: row.gross,
                 notes: row.notes,
                 status: row.status,
+                datevSentAt: row.datev_sent_at || null,
                 createdAt: row.created_at || null,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
@@ -861,6 +862,12 @@
                 depositPaid: !!row.deposit_paid,
                 downPaymentPaid: !!row.down_payment_paid,
                 remainingPaid: !!row.remaining_paid,
+                downPaymentPaidAt: row.down_payment_paid_at || null,
+                remainingPaidAt: row.remaining_paid_at || null,
+                datevDownpaymentSentAt: row.datev_downpayment_sent_at || null,
+                datevRemainingSentAt: row.datev_remaining_sent_at || null,
+                remainingInvoiceId: row.remaining_invoice_id || null,
+                welcomeEmailSentAt: row.welcome_email_sent_at || null,
                 status: row.status,
                 created: row.created_at ? new Date(row.created_at).toLocaleDateString('de-DE') : '',
             });
@@ -919,6 +926,27 @@
                 taxId: 'DE456402186',
                 registerNr: '053/154/01420',
             });
+            const [wifiInfo, setWifiInfo] = useState({ name: 'GREENHOUSE', password: '' });
+            const [datevEmail, setDatevEmail] = useState('5f7f7361-efe5-4cad-8db0-a0849c883227@uploadmail.datev.de');
+            const DEFAULT_WELCOME_EMAIL_TEMPLATE = `Hallo {{vorname}},
+
+dein Aufenthalt findet bald statt. Du kannst am {{datum}} ab 15:00 Uhr jederzeit einchecken.
+
+Weißt du schon, wann du ungefähr ankommen wirst?
+
+Hier ist die Adresse:
+{{adresse}}
+
+Hier sind die WLAN-Zugangsdaten:
+Name: {{wlan_name}}
+Passwort: {{wlan_passwort}}
+
+Wenn du Fragen hast, gib mir gern Bescheid.
+
+Liebe Grüße
+Lucia und Jan`;
+            const [welcomeEmailTemplate, setWelcomeEmailTemplate] = useState(DEFAULT_WELCOME_EMAIL_TEMPLATE);
+            const [showWifiPassword, setShowWifiPassword] = useState(false);
 
             const [downPaymentPercent, setDownPaymentPercent] = useState(30);
             const [guestForm, setGuestForm] = useState({ name: '', email: '', phone: '', street: '', houseNumber: '', zip: '', city: '', notes: '' });
@@ -1182,6 +1210,19 @@
                                 registerNr: parsedCompanyInfo.registerNr || prev.registerNr,
                             }));
                         }
+                        if (dbSettings && dbSettings.wifi) {
+                            const parsedWifi = dbSettings.wifi;
+                            setWifiInfo(prev => ({
+                                name: parsedWifi.name || prev.name,
+                                password: parsedWifi.password || prev.password,
+                            }));
+                        }
+                        if (dbSettings && dbSettings.welcome_email_template) {
+                            setWelcomeEmailTemplate(dbSettings.welcome_email_template);
+                        }
+                        if (dbSettings && dbSettings.datev_email) {
+                            setDatevEmail(dbSettings.datev_email);
+                        }
                         setSettingsLoaded(true);
                     } catch (err) {
                         setDataLoadError('Daten konnten nicht aus der Datenbank geladen werden: ' + err.message);
@@ -1195,6 +1236,24 @@
                 apiFetch('/api/settings/company_info', { method: 'PUT', body: JSON.stringify(companyInfo) })
                     .catch(err => console.warn('Firmendaten konnten nicht gespeichert werden:', err));
             }, [companyInfo, settingsLoaded]);
+
+            useEffect(() => {
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/wifi', { method: 'PUT', body: JSON.stringify(wifiInfo) })
+                    .catch(err => console.warn('WLAN-Daten konnten nicht gespeichert werden:', err));
+            }, [wifiInfo, settingsLoaded]);
+
+            useEffect(() => {
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/welcome_email_template', { method: 'PUT', body: JSON.stringify(welcomeEmailTemplate) })
+                    .catch(err => console.warn('Begrüßungsmail-Vorlage konnte nicht gespeichert werden:', err));
+            }, [welcomeEmailTemplate, settingsLoaded]);
+
+            useEffect(() => {
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/datev_email', { method: 'PUT', body: JSON.stringify(datevEmail) })
+                    .catch(err => console.warn('DATEV-Adresse konnte nicht gespeichert werden:', err));
+            }, [datevEmail, settingsLoaded]);
 
             useEffect(() => {
                 if (activeTab === 'settings') {
@@ -2726,6 +2785,17 @@ Deutschland`;
                 }
             };
 
+            const sendInvoiceToDatev = async (id) => {
+                if (!confirm(`Rechnung ${id} jetzt manuell per E-Mail an DATEV senden?`)) return;
+                try {
+                    await apiFetch(`/api/datev/send-invoice/${id}`, { method: 'POST' });
+                    setInvoices(invoices.map(i => i.id === id ? { ...i, datevSentAt: new Date().toISOString() } : i));
+                    alert(`Rechnung ${id} wurde an DATEV gesendet.`);
+                } catch (err) {
+                    alert('Versand an DATEV fehlgeschlagen: ' + err.message);
+                }
+            };
+
             const markInvoicePaid = async (id) => {
                 try {
                     await apiFetch(`/api/invoices/${id}`, {
@@ -3414,6 +3484,7 @@ Deutschland
                         <button className={`tab-btn ${activeTab === 'occupancy' ? 'active' : ''}`} onClick={() => setActiveTab('occupancy')}>Belegung</button>
                         <button className={`tab-btn ${activeTab === 'revenue' ? 'active' : ''}`} onClick={() => setActiveTab('revenue')}>Einnahmen</button>
                         <button className={`tab-btn ${activeTab === 'invoices' ? 'active' : ''}`} onClick={() => setActiveTab('invoices')}>Rechnungen</button>
+                        <button className={`tab-btn ${activeTab === 'postausgang' ? 'active' : ''}`} onClick={() => setActiveTab('postausgang')}>Postausgang</button>
                         <button className={`tab-btn ${activeTab === 'pricing' ? 'active' : ''}`} onClick={() => setActiveTab('pricing')}>Preise &amp; Bedingungen</button>
                         <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Einstellungen</button>
                     </div>
@@ -4491,6 +4562,14 @@ Deutschland
                                             {invoice.status !== 'paid' && (
                                                 <button className="success" onClick={() => markInvoicePaid(invoice.id)}>✓ Als bezahlt markieren</button>
                                             )}
+                                            <button
+                                                className="secondary"
+                                                onClick={() => sendInvoiceToDatev(invoice.id)}
+                                                title={invoice.datevSentAt ? `Bereits am ${new Date(invoice.datevSentAt).toLocaleString('de-DE')} an DATEV gesendet — erneut senden?` : 'Manuell an DATEV senden'}
+                                                style={invoice.datevSentAt ? { opacity: 0.7 } : {}}
+                                            >
+                                                {invoice.datevSentAt ? '📤 Erneut an DATEV senden' : '📤 An DATEV senden'}
+                                            </button>
                                             <button className="danger" onClick={() => deleteInvoice(invoice.id)}>Löschen</button>
                                         </div>
                                     </div>
@@ -4499,6 +4578,114 @@ Deutschland
                             </div>
                         </div>
                     )}
+
+                    {/* POSTAUSGANG (DATEV + Begrüßungsmails) */}
+                    {activeTab === 'postausgang' && (() => {
+                        const datevEvents = [];
+                        const welcomeEvents = [];
+                        for (const b of bookings) {
+                            if (b.datevDownpaymentSentAt) {
+                                datevEvents.push({
+                                    bookingId: b.id, guestName: b.guest.name, leg: 'Anzahlung',
+                                    amount: b.downPayment, sentAt: b.datevDownpaymentSentAt,
+                                    checkIn: b.checkIn, checkOut: b.checkOut,
+                                });
+                            }
+                            if (b.datevRemainingSentAt) {
+                                datevEvents.push({
+                                    bookingId: b.id, guestName: b.guest.name, leg: 'Restzahlung',
+                                    amount: b.remaining, sentAt: b.datevRemainingSentAt,
+                                    invoiceId: b.remainingInvoiceId, checkIn: b.checkIn, checkOut: b.checkOut,
+                                });
+                            }
+                            if (b.welcomeEmailSentAt) {
+                                welcomeEvents.push({
+                                    bookingId: b.id, guestName: b.guest.name, guestEmail: b.guest.email,
+                                    sentAt: b.welcomeEmailSentAt, checkIn: b.checkIn, checkOut: b.checkOut,
+                                });
+                            }
+                        }
+                        datevEvents.sort((a, c) => new Date(c.sentAt) - new Date(a.sentAt));
+                        welcomeEvents.sort((a, c) => new Date(c.sentAt) - new Date(a.sentAt));
+                        const manualDatevInvoices = invoices
+                            .filter(inv => inv.datevSentAt)
+                            .slice()
+                            .sort((a, c) => new Date(c.datevSentAt) - new Date(a.datevSentAt));
+                        const fmt = (iso) => new Date(iso).toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+                        return (
+                            <div>
+                                <div className="card">
+                                    <h2 style={{ marginTop: 0 }}>📤 An DATEV gesendet</h2>
+                                    <p style={{ fontSize: '13px', color: 'var(--licht-70)' }}>
+                                        Übersicht aller automatisch an DATEV übermittelten Anzahlungs-/Restzahlungs-Rechnungen, zur Kontrolle.
+                                    </p>
+                                    {datevEvents.length === 0 && (
+                                        <p style={{ color: 'var(--licht-70)', textAlign: 'center', padding: '30px 0' }}>Noch nichts an DATEV gesendet</p>
+                                    )}
+                                    {datevEvents.map((ev, i) => (
+                                        <div key={i} className="list-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--rahmen, #333)', padding: '10px 0' }}>
+                                            <div>
+                                                <div style={{ fontWeight: 600 }}>{ev.guestName} — {ev.leg}{ev.invoiceId ? ` (${ev.invoiceId})` : ''}</div>
+                                                <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>
+                                                    Buchung {ev.bookingId} · Aufenthalt {ev.checkIn} bis {ev.checkOut} · {Number(ev.amount).toFixed(2)} €
+                                                </div>
+                                            </div>
+                                            <div style={{ fontSize: '13px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                Gesendet: {fmt(ev.sentAt)}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="card">
+                                    <h2 style={{ marginTop: 0 }}>📤 Manuell an DATEV gesendete Rechnungen</h2>
+                                    <p style={{ fontSize: '13px', color: 'var(--licht-70)' }}>
+                                        Rechnungen, die du per Knopfdruck (nicht automatisch) an DATEV geschickt hast.
+                                    </p>
+                                    {manualDatevInvoices.length === 0 && (
+                                        <p style={{ color: 'var(--licht-70)', textAlign: 'center', padding: '30px 0' }}>Noch keine manuell gesendet</p>
+                                    )}
+                                    {manualDatevInvoices.map((inv) => (
+                                        <div key={inv.id} className="list-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--rahmen, #333)', padding: '10px 0' }}>
+                                            <div>
+                                                <div style={{ fontWeight: 600 }}>{inv.id} — {inv.guestName}</div>
+                                                <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>
+                                                    {Number(inv.gross).toFixed(2)} € · Quelle: {inv.sourceRef || '-'}
+                                                </div>
+                                            </div>
+                                            <div style={{ fontSize: '13px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                Gesendet: {fmt(inv.datevSentAt)}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="card">
+                                    <h2 style={{ marginTop: 0 }}>✉️ Begrüßungsmails gesendet</h2>
+                                    <p style={{ fontSize: '13px', color: 'var(--licht-70)' }}>
+                                        Übersicht aller automatisch verschickten Begrüßungsmails (5 Tage vor Anreise).
+                                    </p>
+                                    {welcomeEvents.length === 0 && (
+                                        <p style={{ color: 'var(--licht-70)', textAlign: 'center', padding: '30px 0' }}>Noch keine Begrüßungsmails gesendet</p>
+                                    )}
+                                    {welcomeEvents.map((ev, i) => (
+                                        <div key={i} className="list-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--rahmen, #333)', padding: '10px 0' }}>
+                                            <div>
+                                                <div style={{ fontWeight: 600 }}>{ev.guestName}</div>
+                                                <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>
+                                                    Buchung {ev.bookingId} · {ev.guestEmail} · Anreise {ev.checkIn}
+                                                </div>
+                                            </div>
+                                            <div style={{ fontSize: '13px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                Gesendet: {fmt(ev.sentAt)}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* PREISE & BEDINGUNGEN */}
                     {activeTab === 'pricing' && (
@@ -4756,6 +4943,53 @@ Deutschland
                                         <label>Unternehmensregisternummer</label>
                                         <input type="text" value={companyInfo.registerNr} onChange={(e) => setCompanyInfo({ ...companyInfo, registerNr: e.target.value })} placeholder="053/154/01420" />
                                     </div>
+                                </div>
+
+                                <h3>WLAN-Zugangsdaten (für automatische Begrüßungsmail)</h3>
+                                <div className="grid">
+                                    <div className="form-group">
+                                        <label>Netzwerkname (SSID)</label>
+                                        <input type="text" value={wifiInfo.name} onChange={(e) => setWifiInfo({ ...wifiInfo, name: e.target.value })} placeholder="GREENHOUSE" />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Passwort</label>
+                                        <div style={{ display: 'flex', gap: '6px' }}>
+                                            <input
+                                                type={showWifiPassword ? 'text' : 'password'}
+                                                value={wifiInfo.password}
+                                                onChange={(e) => setWifiInfo({ ...wifiInfo, password: e.target.value })}
+                                                placeholder="•••••••••"
+                                                style={{ flex: 1 }}
+                                            />
+                                            <button type="button" className="secondary" onClick={() => setShowWifiPassword(!showWifiPassword)} title={showWifiPassword ? 'Passwort verbergen' : 'Passwort anzeigen'}>
+                                                {showWifiPassword ? '🙈' : '👁️'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <h3>Begrüßungsmail-Text (automatisch, 5 Tage vor Anreise)</h3>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: '-8px' }}>
+                                    Verfügbare Platzhalter (werden automatisch pro Buchung ersetzt): {'{{vorname}}'}, {'{{datum}}'}, {'{{adresse}}'}, {'{{wlan_name}}'}, {'{{wlan_passwort}}'}
+                                </p>
+                                <div className="form-group">
+                                    <textarea
+                                        rows={14}
+                                        value={welcomeEmailTemplate}
+                                        onChange={(e) => setWelcomeEmailTemplate(e.target.value)}
+                                        style={{ fontFamily: 'monospace', fontSize: '13px' }}
+                                    />
+                                </div>
+                                <button type="button" className="secondary" onClick={() => setWelcomeEmailTemplate(DEFAULT_WELCOME_EMAIL_TEMPLATE)}>
+                                    ↺ Auf Standardtext zurücksetzen
+                                </button>
+
+                                <h3>DATEV-Upload-Adresse</h3>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: '-8px' }}>
+                                    Ziel-E-Mail-Adresse für automatische und manuelle DATEV-Übermittlungen. Nur ändern, falls DATEV euch eine neue Adresse zuweist.
+                                </p>
+                                <div className="form-group">
+                                    <input type="email" value={datevEmail} onChange={(e) => setDatevEmail(e.target.value)} placeholder="xxxxxxxx@uploadmail.datev.de" />
                                 </div>
                             </div>
                         </div>
