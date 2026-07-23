@@ -1159,19 +1159,21 @@ Lucia und Jan`;
                 // aus der Datenbank statt aus localStorage.
                 (async () => {
                     try {
-                        const [dbGuests, dbOffers, dbInquiries, dbBookings, dbSettings, dbBlockedPeriods] = await Promise.all([
+                        const [dbGuests, dbOffers, dbInquiries, dbBookings, dbSettings, dbBlockedPeriods, dbInvoices] = await Promise.all([
                             apiFetch('/api/guests'),
                             apiFetch('/api/offers'),
                             apiFetch('/api/inquiries'),
                             apiFetch('/api/bookings'),
                             apiFetch('/api/settings'),
                             apiFetch('/api/blocked-periods'),
+                            apiFetch('/api/invoices'),
                         ]);
                         setGuests((dbGuests || []).map(mapGuestFromDb));
                         setOffers((dbOffers || []).map(mapOfferFromDb));
                         setInquiries((dbInquiries || []).map(mapInquiryFromDb));
                         setBookings((dbBookings || []).map(mapBookingFromDb));
                         setBlockedPeriods((dbBlockedPeriods || []).map(mapBlockedPeriodFromDb));
+                        setInvoices((dbInvoices || []).map(mapInvoiceFromDb));
 
                         if (dbSettings && dbSettings.cancellation_policy) {
                             setCancellationPolicy(dbSettings.cancellation_policy);
