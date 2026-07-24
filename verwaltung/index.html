@@ -910,6 +910,10 @@
                 wohnung1: 80,
                 wohnung2: 65,
                 both: 140,
+                // Wochenend-Preise (Fr-So) — leer/0 bedeutet "wie unter der Woche".
+                weekendWohnung1: 0,
+                weekendWohnung2: 0,
+                weekendBoth: 0,
                 basePersons: { wohnung1: 4, wohnung2: 4, both: 4 },
                 extraPersonPrices: [15, 15, 15, 15], // Preise für Person 5, 6, 7, 8
                 earlyCheckin: 20,
@@ -921,6 +925,31 @@
                 deposit: 100,
                 extraServices: [], // frei verwaltbare, zubuchbare Leistungen: [{ id, name, price }]
             });
+
+            // Individuelle Preiszeiträume (z. B. Feiertage, Silvester) — überschreiben
+            // den Wochentag-/Wochenend-Preis für den jeweiligen Zeitraum + Wohnung.
+            const [priceOverrides, setPriceOverrides] = useState([]);
+
+            // Schulferien Brandenburg — manuell gepflegt (lassen sich nicht berechnen,
+            // werden jährlich vom Land neu festgelegt). Mit sinnvollen Startwerten
+            // vorbefüllt (Stand: Sommer 2026), im Kalender-Tool ergänzbar/editierbar.
+            const DEFAULT_SCHOOL_HOLIDAYS = [
+                { id: 'sh-2026-sommer', label: 'Sommerferien 2026', startDate: '2026-07-09', endDate: '2026-08-22' },
+                { id: 'sh-2026-herbst', label: 'Herbstferien 2026', startDate: '2026-10-19', endDate: '2026-10-30' },
+                { id: 'sh-2026-weihnachten', label: 'Weihnachtsferien 2026/27', startDate: '2026-12-23', endDate: '2027-01-02' },
+                { id: 'sh-2027-winter', label: 'Winterferien 2027', startDate: '2027-02-01', endDate: '2027-02-06' },
+                { id: 'sh-2027-ostern', label: 'Osterferien 2027', startDate: '2027-03-22', endDate: '2027-04-03' },
+                { id: 'sh-2027-pfingsten', label: 'Pfingstferien 2027', startDate: '2027-05-18', endDate: '2027-05-18' },
+            ];
+            const [schoolHolidays, setSchoolHolidays] = useState(DEFAULT_SCHOOL_HOLIDAYS);
+
+            // State für die Kalender-Ansicht (Feiertage/Ferien/Sonderpreise) im Preise-Tab.
+            const today = new Date();
+            const [calendarYear, setCalendarYear] = useState(today.getFullYear());
+            const [calendarMonthIndex, setCalendarMonthIndex] = useState(today.getMonth()); // 0-11
+            const [overrideForm, setOverrideForm] = useState({ startDate: '', endDate: '', wohnung: 'all', pricePerNight: '', label: '' });
+            const [holidayForm, setHolidayForm] = useState({ startDate: '', endDate: '', label: '' });
+
 
             const [companyInfo, setCompanyInfo] = useState({
                 email: 'Greenhousemarket@proton.me',
@@ -1228,6 +1257,12 @@ Lucia und Jan`;
                         if (dbSettings && dbSettings.datev_email) {
                             setDatevEmail(dbSettings.datev_email);
                         }
+                        if (dbSettings && dbSettings.price_overrides) {
+                            setPriceOverrides(dbSettings.price_overrides);
+                        }
+                        if (dbSettings && dbSettings.school_holidays) {
+                            setSchoolHolidays(dbSettings.school_holidays);
+                        }
                         setSettingsLoaded(true);
                     } catch (err) {
                         setDataLoadError('Daten konnten nicht aus der Datenbank geladen werden: ' + err.message);
@@ -1259,6 +1294,18 @@ Lucia und Jan`;
                 apiFetch('/api/settings/datev_email', { method: 'PUT', body: JSON.stringify(datevEmail) })
                     .catch(err => console.warn('DATEV-Adresse konnte nicht gespeichert werden:', err));
             }, [datevEmail, settingsLoaded]);
+
+            useEffect(() => {
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/price_overrides', { method: 'PUT', body: JSON.stringify(priceOverrides) })
+                    .catch(err => console.warn('Preiszeiträume konnten nicht gespeichert werden:', err));
+            }, [priceOverrides, settingsLoaded]);
+
+            useEffect(() => {
+                if (!settingsLoaded) return;
+                apiFetch('/api/settings/school_holidays', { method: 'PUT', body: JSON.stringify(schoolHolidays) })
+                    .catch(err => console.warn('Schulferien konnten nicht gespeichert werden:', err));
+            }, [schoolHolidays, settingsLoaded]);
 
             useEffect(() => {
                 if (activeTab === 'settings') {
@@ -1502,6 +1549,153 @@ Lucia und Jan`;
                 setShowOfferForm(true);
             };
 
+            // Berechnet Ostersonntag für ein gegebenes Jahr (Gauß'sche Osterformel).
+            // Daraus lassen sich Karfreitag, Ostermontag, Christi Himmelfahrt und
+            // Pfingsten ableiten — alle anderen deutschen Feiertage sind Fixdaten.
+            const calculateEasterSunday = (year) => {
+                const a = year % 19;
+                const b = Math.floor(year / 100);
+                const c = year % 100;
+                const d = Math.floor(b / 4);
+                const e = b % 4;
+                const f = Math.floor((b + 8) / 25);
+                const g = Math.floor((b - f + 1) / 3);
+                const h = (19 * a + b - d - g + 15) % 30;
+                const i = Math.floor(c / 4);
+                const k = c % 4;
+                const l = (32 + 2 * e + 2 * i - h - k) % 7;
+                const m = Math.floor((a + 11 * h + 22 * l) / 451);
+                const month = Math.floor((h + l - 7 * m + 114) / 31);
+                const day = ((h + l - 7 * m + 114) % 31) + 1;
+                return new Date(Date.UTC(year, month - 1, day));
+            };
+
+            const addDaysToDate = (date, days) => {
+                const d = new Date(date);
+                d.setUTCDate(d.getUTCDate() + days);
+                return d;
+            };
+            const toDateStr = (date) => date.toISOString().split('T')[0];
+
+            // Gesetzliche Feiertage Brandenburg für ein Jahr — inkl. Reformationstag
+            // (in Brandenburg gesetzlicher Feiertag, anders als in manchen Bundesländern).
+            const germanHolidaysForYear = (year) => {
+                const easter = calculateEasterSunday(year);
+                const holidays = [
+                    { date: `${year}-01-01`, label: 'Neujahr' },
+                    { date: toDateStr(addDaysToDate(easter, -2)), label: 'Karfreitag' },
+                    { date: toDateStr(easter), label: 'Ostersonntag' },
+                    { date: toDateStr(addDaysToDate(easter, 1)), label: 'Ostermontag' },
+                    { date: `${year}-05-01`, label: 'Tag der Arbeit' },
+                    { date: toDateStr(addDaysToDate(easter, 39)), label: 'Christi Himmelfahrt' },
+                    { date: toDateStr(addDaysToDate(easter, 49)), label: 'Pfingstsonntag' },
+                    { date: toDateStr(addDaysToDate(easter, 50)), label: 'Pfingstmontag' },
+                    { date: `${year}-10-03`, label: 'Tag der Deutschen Einheit' },
+                    { date: `${year}-10-31`, label: 'Reformationstag' },
+                    { date: `${year}-12-25`, label: '1. Weihnachtsfeiertag' },
+                    { date: `${year}-12-26`, label: '2. Weihnachtsfeiertag' },
+                ];
+                return holidays;
+            };
+
+            // Cache über mehrere Jahre hinweg (Kalender kann Jahresgrenzen überschreiten).
+            const getHolidaysForDateRange = (startYear, endYear) => {
+                let all = [];
+                for (let y = startYear; y <= endYear; y++) all = all.concat(germanHolidaysForYear(y));
+                return all;
+            };
+
+            const isSchoolHoliday = (dateStr) => {
+                return schoolHolidays.some(h => dateStr >= h.startDate && dateStr <= h.endDate);
+            };
+
+            const getPublicHoliday = (dateStr) => {
+                const year = parseInt(dateStr.split('-')[0], 10);
+                const holidays = germanHolidaysForYear(year);
+                return holidays.find(h => h.date === dateStr) || null;
+            };
+
+            // Ermittelt den Preis für EINE konkrete Nacht (nicht den ganzen Aufenthalt):
+            // 1. Individueller Preiszeitraum (z. B. Silvester) — falls vorhanden, hat Vorrang
+            // 2. Sonst: Wochenend-Preis (Fr/Sa/So), falls gepflegt
+            // 3. Sonst: regulärer Wochentag-Preis (Mo-Do)
+            const nightlyBasePrice = (dateStr, wohnung) => {
+                const override = priceOverrides.find(ov =>
+                    dateStr >= ov.startDate && dateStr <= ov.endDate &&
+                    (ov.wohnung === wohnung || ov.wohnung === 'all')
+                );
+                if (override) return override.pricePerNight;
+
+                const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,1=Mo,...,5=Fr,6=Sa
+                const isWeekend = (day === 5 || day === 6 || day === 0); // Fr, Sa, So
+                if (isWeekend) {
+                    const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
+                    if (prices[weekendKey]) return prices[weekendKey];
+                }
+                return prices[wohnung] || 0;
+            };
+
+            // Summiert die Übernachtungspreise für den gesamten Aufenthalt (ersetzt
+            // die frühere einfache "nights * Preis"-Rechnung durch eine tagesgenaue).
+            const calculateStayBasePrice = (checkIn, checkOut, wohnung) => {
+                if (!checkIn || !checkOut) return 0;
+                let total = 0;
+                let cur = checkIn;
+                while (cur < checkOut) {
+                    total += nightlyBasePrice(cur, wohnung);
+                    cur = toDateStr(addDaysToDate(new Date(cur + 'T00:00:00Z'), 1));
+                }
+                return total;
+            };
+
+            // Baut die Unterkunfts-Rechnungsposten für einen Aufenthalt. Bei einheitlichem
+            // Preis über den ganzen Zeitraum: ein Posten wie bisher. Falls sich der Preis
+            // unterscheidet (Wochenende, individueller Zeitraum wie Weihnachten etc.):
+            // mehrere, klar beschriftete Posten — für volle Transparenz auf der Rechnung.
+            const buildAccommodationLineItems = (checkIn, checkOut, wohnung) => {
+                if (!checkIn || !checkOut) return [];
+                const groups = {};
+                let cur = checkIn;
+                while (cur < checkOut) {
+                    const override = priceOverrides.find(ov =>
+                        cur >= ov.startDate && cur <= ov.endDate &&
+                        (ov.wohnung === wohnung || ov.wohnung === 'all')
+                    );
+                    const day = new Date(cur + 'T00:00:00Z').getUTCDay();
+                    const isWeekend = (day === 5 || day === 6 || day === 0);
+                    let price, label;
+                    if (override) {
+                        price = override.pricePerNight;
+                        label = override.label || 'Sondertarif';
+                    } else if (isWeekend) {
+                        const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
+                        if (prices[weekendKey]) {
+                            price = prices[weekendKey];
+                            label = 'Wochenende';
+                        } else {
+                            price = prices[wohnung] || 0;
+                            label = 'Standard';
+                        }
+                    } else {
+                        price = prices[wohnung] || 0;
+                        label = 'Standard';
+                    }
+                    const key = `${label}|${price}`;
+                    if (!groups[key]) groups[key] = { price, label, count: 0 };
+                    groups[key].count++;
+                    cur = toDateStr(addDaysToDate(new Date(cur + 'T00:00:00Z'), 1));
+                }
+                const entries = Object.values(groups);
+                const wl = wohnung === 'wohnung1' ? 'Wohnung I' : wohnung === 'wohnung2' ? 'Wohnung II' : 'Beide Wohnungen';
+                return entries.map(g => ({
+                    description: entries.length > 1
+                        ? `Unterkunft ${wl} – ${g.label} (${g.count} ${g.count === 1 ? 'Nacht' : 'Nächte'})`
+                        : `Unterkunft ${wl} (${g.count} ${g.count === 1 ? 'Nacht' : 'Nächte'})`,
+                    quantity: g.count,
+                    unitPrice: g.price,
+                }));
+            };
+
             const calculateNights = (checkIn, checkOut) => {
                 if (!checkIn || !checkOut) return 0;
                 const start = new Date(checkIn);
@@ -1512,14 +1706,9 @@ Lucia und Jan`;
             const calculateTotal = (formData) => {
                 if (!formData.checkIn || !formData.checkOut) return 0;
                 const nights = calculateNights(formData.checkIn, formData.checkOut);
-                
-                let basePrice = 0;
-                if (formData.wohnung === 'wohnung1') basePrice = prices.wohnung1;
-                else if (formData.wohnung === 'wohnung2') basePrice = prices.wohnung2;
-                else if (formData.wohnung === 'both') basePrice = prices.both;
-                
-                let total = basePrice * nights;
-                
+
+                let total = calculateStayBasePrice(formData.checkIn, formData.checkOut, formData.wohnung);
+
                 // Zusatzgebühr für Personen über Basisanzahl - individuelle Preise
                 const basePersonsForWohnung = getBasePersons(formData.wohnung);
                 if (formData.persons > basePersonsForWohnung) {
@@ -1729,10 +1918,7 @@ Lucia und Jan`;
 
             const generateMailContent = (offer) => {
                 const nights = calculateNights(offer.checkIn, offer.checkOut);
-                let basePrice = 0;
-                if (offer.wohnung === 'wohnung1') basePrice = prices.wohnung1;
-                else if (offer.wohnung === 'wohnung2') basePrice = prices.wohnung2;
-                else if (offer.wohnung === 'both') basePrice = prices.both;
+                const accommodationItems = buildAccommodationLineItems(offer.checkIn, offer.checkOut, offer.wohnung);
                 
                 let mailContent = `Liebe/r ${offer.guest.name},
 
@@ -1755,7 +1941,9 @@ Gäste: ${offer.persons} Person${offer.persons > 1 ? 'en' : ''}
 LEISTUNGEN & PREISE
 `;
 
-                mailContent += `Übernachtungen (${nights}× @ ${basePrice}€): ${(nights * basePrice).toFixed(2)}€\n`;
+                accommodationItems.forEach(item => {
+                    mailContent += `${item.description} (${item.quantity}× @ ${item.unitPrice}€): ${(item.quantity * item.unitPrice).toFixed(2)}€\n`;
+                });
                 const mailBasePersons = getBasePersons(offer.wohnung);
                 if (offer.persons > mailBasePersons) {
                     for (let i = mailBasePersons; i < offer.persons; i++) {
@@ -1818,13 +2006,9 @@ Deutschland`;
             // Baut die aufgeschlüsselte Positionsliste für ein Angebot (analog zur Rechnung)
             const getOfferItems = (offer) => {
                 const nights = calculateNights(offer.checkIn, offer.checkOut);
-                let basePrice = 0;
-                if (offer.wohnung === 'wohnung1') basePrice = prices.wohnung1;
-                else if (offer.wohnung === 'wohnung2') basePrice = prices.wohnung2;
-                else basePrice = prices.both;
 
                 const items = [
-                    { description: `Unterkunft ${wohnungLabel(offer.wohnung)} (${nights} Nächte)`, quantity: nights, unitPrice: basePrice },
+                    ...buildAccommodationLineItems(offer.checkIn, offer.checkOut, offer.wohnung),
                 ];
 
                 const basePersonsForWohnung = getBasePersons(offer.wohnung);
@@ -2470,6 +2654,61 @@ Deutschland`;
             // ---- Preisverwaltung (Grundpreise, feste & frei verwaltbare Zusatzleistungen) ----
             const updatePrice = (field, value) => setPrices({ ...prices, [field]: value });
 
+            const addPriceOverride = () => {
+                if (!overrideForm.startDate || !overrideForm.endDate || !overrideForm.pricePerNight) {
+                    alert('Bitte Start-/Enddatum und Preis pro Nacht angeben.');
+                    return;
+                }
+                const newOverride = {
+                    id: 'ov-' + Date.now(),
+                    startDate: overrideForm.startDate,
+                    endDate: overrideForm.endDate,
+                    wohnung: overrideForm.wohnung,
+                    pricePerNight: parseFloat(overrideForm.pricePerNight) || 0,
+                    label: overrideForm.label || 'Sondertarif',
+                };
+                setPriceOverrides([...priceOverrides, newOverride]);
+                setOverrideForm({ startDate: '', endDate: '', wohnung: 'all', pricePerNight: '', label: '' });
+            };
+
+            const deletePriceOverride = (id) => setPriceOverrides(priceOverrides.filter(ov => ov.id !== id));
+
+            const addSchoolHoliday = () => {
+                if (!holidayForm.startDate || !holidayForm.endDate) {
+                    alert('Bitte Start- und Enddatum angeben.');
+                    return;
+                }
+                const newHoliday = {
+                    id: 'sh-' + Date.now(),
+                    startDate: holidayForm.startDate,
+                    endDate: holidayForm.endDate,
+                    label: holidayForm.label || 'Ferien',
+                };
+                setSchoolHolidays([...schoolHolidays, newHoliday]);
+                setHolidayForm({ startDate: '', endDate: '', label: '' });
+            };
+
+            const deleteSchoolHoliday = (id) => setSchoolHolidays(schoolHolidays.filter(h => h.id !== id));
+
+            const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+
+            // Erzeugt die Tageszellen für die Monatsansicht (inkl. Auffüll-Tage davor/danach).
+            const getCalendarDays = (year, monthIndex) => {
+                const firstOfMonth = new Date(Date.UTC(year, monthIndex, 1));
+                const startWeekday = (firstOfMonth.getUTCDay() + 6) % 7; // Montag = 0
+                const daysInMonth = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+                const cells = [];
+                for (let i = 0; i < startWeekday; i++) cells.push(null);
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const dateStr = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                    cells.push(dateStr);
+                }
+                while (cells.length % 7 !== 0) cells.push(null);
+                return cells;
+            };
+
+
+
             // Export/Import der Einstellungen als JSON-Datei. Notwendig, weil Chrome
             // jeder heruntergeladenen Dateiversion einen eigenen, getrennten
             // localStorage-Speicher gibt — ohne das hier würden Preise, Kontodaten
@@ -2563,13 +2802,9 @@ Deutschland`;
             const buildInvoiceItemsFromParams = (params) => {
                 const wohnung = params.wohnung;
                 const nights = Math.max(1, calculateNights(params.serviceStart, params.serviceEnd) || 1);
-                let basePrice = 0;
-                if (wohnung === 'wohnung1') basePrice = prices.wohnung1;
-                else if (wohnung === 'wohnung2') basePrice = prices.wohnung2;
-                else basePrice = prices.both;
 
                 const items = [
-                    { description: `Unterkunft ${wohnungLabel(wohnung)} (${nights} Nächte)`, quantity: nights, unitPrice: basePrice },
+                    ...buildAccommodationLineItems(params.serviceStart, params.serviceEnd, wohnung),
                 ];
 
                 const basePersonsForWohnung = getBasePersons(wohnung);
@@ -3903,9 +4138,7 @@ Deutschland
                                         <div className="offer-row">
                                             <span>Zimmerpreis ({nights}×):</span>
                                             <span>
-                                                {offerForm.wohnung === 'wohnung1' ? (nights * prices.wohnung1).toFixed(2) : 
-                                                 offerForm.wohnung === 'wohnung2' ? (nights * prices.wohnung2).toFixed(2) :
-                                                 (nights * prices.both).toFixed(2)}€
+                                                {calculateStayBasePrice(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung).toFixed(2)}€
                                             </span>
                                         </div>
                                         {offerForm.persons > getBasePersons(offerForm.wohnung) && (() => {
@@ -4252,20 +4485,31 @@ Deutschland
                                     {bookings.length === 0 ? (
                                         <p style={{ color: 'var(--licht-70)' }}>Noch keine Buchungen</p>
                                     ) : (
-                                        bookings.slice().reverse().map(b => (
-                                            <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--licht-08)' }}>
-                                                <div>
-                                                    <div style={{ fontWeight: '600' }}>{b.id}</div>
-                                                    <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>{b.guest.name} • {b.checkIn} bis {b.checkOut}</div>
-                                                </div>
-                                                <div style={{ textAlign: 'right' }}>
-                                                    <div style={{ fontWeight: '600' }}>{safeNum(b.total).toFixed(2)}€</div>
-                                                    <div className={b.status === 'completed' ? 'status-paid' : 'status-pending'}>
-                                                        {b.status === 'completed' ? '✓ Vollständig bezahlt' : b.status === 'confirmed' ? '⏳ Restzahlung ausstehend' : b.status === 'awaiting_downpayment' ? '⏳ Anzahlung ausstehend' : '⏳ Kaution ausstehend'}
+                                        bookings.slice().reverse().map(b => {
+                                            const downPaymentInvoice = b.downPaymentInvoiceId ? invoices.find(i => i.id === b.downPaymentInvoiceId) : null;
+                                            const remainingInvoice = b.remainingInvoiceId ? invoices.find(i => i.id === b.remainingInvoiceId) : null;
+                                            return (
+                                                <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--licht-08)' }}>
+                                                    <div>
+                                                        <div style={{ fontWeight: '600' }}>{b.id}</div>
+                                                        <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>{b.guest.name} • {b.checkIn} bis {b.checkOut}</div>
+                                                        {(downPaymentInvoice || remainingInvoice) && (
+                                                            <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>
+                                                                {downPaymentInvoice && <>Anzahlung: {invoiceDisplayNumber(downPaymentInvoice)}</>}
+                                                                {downPaymentInvoice && remainingInvoice && ' · '}
+                                                                {remainingInvoice && <>Restzahlung: {invoiceDisplayNumber(remainingInvoice)}</>}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <div style={{ textAlign: 'right' }}>
+                                                        <div style={{ fontWeight: '600' }}>{safeNum(b.total).toFixed(2)}€</div>
+                                                        <div className={b.status === 'completed' ? 'status-paid' : 'status-pending'}>
+                                                            {b.status === 'completed' ? '✓ Vollständig bezahlt' : b.status === 'confirmed' ? '⏳ Restzahlung ausstehend' : b.status === 'awaiting_downpayment' ? '⏳ Anzahlung ausstehend' : '⏳ Kaution ausstehend'}
+                                                        </div>
                                                     </div>
                                                 </div>
-                                            </div>
-                                        ))
+                                            );
+                                        })
                                     )}
                                 </div>
                             </div>
@@ -4727,6 +4971,28 @@ Deutschland
                                         <label>Beide Wohnungen (€/Nacht)</label>
                                         <input type="number" min="0" step="1" value={prices.both} onChange={(e) => updatePrice('both', parseFloat(e.target.value) || 0)} />
                                     </div>
+                                </div>
+
+                                <h4 style={{ marginTop: '20px', marginBottom: '10px' }}>Wochenend-Preise (Fr–So)</h4>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
+                                    Optional — leer/0 lassen bedeutet: Wochenende kostet genauso viel wie unter der Woche (Mo–Do).
+                                </p>
+                                <div className="grid">
+                                    <div className="form-group">
+                                        <label>Wohnung I – Wochenende (€/Nacht)</label>
+                                        <input type="number" min="0" step="1" value={prices.weekendWohnung1 || ''} onChange={(e) => updatePrice('weekendWohnung1', parseFloat(e.target.value) || 0)} placeholder={String(prices.wohnung1)} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Wohnung II – Wochenende (€/Nacht)</label>
+                                        <input type="number" min="0" step="1" value={prices.weekendWohnung2 || ''} onChange={(e) => updatePrice('weekendWohnung2', parseFloat(e.target.value) || 0)} placeholder={String(prices.wohnung2)} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Beide Wohnungen – Wochenende (€/Nacht)</label>
+                                        <input type="number" min="0" step="1" value={prices.weekendBoth || ''} onChange={(e) => updatePrice('weekendBoth', parseFloat(e.target.value) || 0)} placeholder={String(prices.both)} />
+                                    </div>
+                                </div>
+
+                                <div className="grid" style={{ marginTop: '12px' }}>
                                     <div className="form-group">
                                         <label>Basis-Personenanzahl Wohnung I</label>
                                         <input type="number" min="1" step="1" value={getBasePersons('wohnung1')} onChange={(e) => updateBasePersons('wohnung1', parseInt(e.target.value) || 1)} />
@@ -4831,6 +5097,135 @@ Deutschland
                                     </div>
                                 ))}
                                 <button type="button" className="secondary" onClick={addExtraService}>+ Leistung hinzufügen</button>
+                            </div>
+
+                            <div className="card">
+                                <h3>📅 Kalender: Feiertage, Ferien &amp; Sonderpreise</h3>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
+                                    Gesetzliche Feiertage (rot) werden automatisch für jedes Jahr berechnet. Schulferien (blau) sind manuell
+                                    gepflegt und unten ergänzbar. Individuelle Preiszeiträume (gold) überschreiben für den jeweiligen
+                                    Zeitraum den Wochentags-/Wochenend-Preis.
+                                </p>
+
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '16px 0' }}>
+                                    <button type="button" className="secondary" onClick={() => {
+                                        if (calendarMonthIndex === 0) { setCalendarMonthIndex(11); setCalendarYear(calendarYear - 1); }
+                                        else setCalendarMonthIndex(calendarMonthIndex - 1);
+                                    }}>← Vormonat</button>
+                                    <h4 style={{ margin: 0 }}>{MONTH_NAMES[calendarMonthIndex]} {calendarYear}</h4>
+                                    <button type="button" className="secondary" onClick={() => {
+                                        if (calendarMonthIndex === 11) { setCalendarMonthIndex(0); setCalendarYear(calendarYear + 1); }
+                                        else setCalendarMonthIndex(calendarMonthIndex + 1);
+                                    }}>Folgemonat →</button>
+                                </div>
+
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '4px', textAlign: 'center' }}>
+                                    {['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map(d => (
+                                        <div key={d} style={{ fontSize: '11px', color: 'var(--licht-70)', paddingBottom: '4px' }}>{d}</div>
+                                    ))}
+                                    {getCalendarDays(calendarYear, calendarMonthIndex).map((dateStr, idx) => {
+                                        if (!dateStr) return <div key={idx}></div>;
+                                        const holiday = getPublicHoliday(dateStr);
+                                        const isSchoolHol = isSchoolHoliday(dateStr);
+                                        const override = priceOverrides.find(ov => dateStr >= ov.startDate && dateStr <= ov.endDate);
+                                        const dayNum = parseInt(dateStr.split('-')[2], 10);
+                                        const weekday = new Date(dateStr + 'T00:00:00Z').getUTCDay();
+                                        const isWeekend = (weekday === 5 || weekday === 6 || weekday === 0);
+                                        let bg = 'transparent';
+                                        if (override) bg = 'rgba(212, 175, 55, 0.25)';
+                                        else if (isSchoolHol) bg = 'rgba(90, 150, 220, 0.18)';
+                                        else if (isWeekend) bg = 'rgba(255,255,255,0.04)';
+                                        return (
+                                            <div key={idx} title={holiday ? holiday.label : (override ? override.label : '')} style={{
+                                                padding: '8px 2px', borderRadius: '4px', background: bg,
+                                                border: holiday ? '1px solid rgba(220,80,80,0.6)' : '1px solid transparent',
+                                                fontSize: '13px',
+                                            }}>
+                                                <div style={{ fontWeight: holiday ? '700' : '400', color: holiday ? '#e07a7a' : 'inherit' }}>{dayNum}</div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                                <div style={{ display: 'flex', gap: '16px', marginTop: '12px', fontSize: '11px', color: 'var(--licht-70)' }}>
+                                    <span>🟥 Feiertag</span>
+                                    <span>🟦 Schulferien</span>
+                                    <span>🟨 Sonderpreis-Zeitraum</span>
+                                </div>
+
+                                <h4 style={{ marginTop: '24px' }}>Individuelle Preiszeiträume</h4>
+                                <div className="grid">
+                                    <div className="form-group">
+                                        <label>Von</label>
+                                        <input type="date" value={overrideForm.startDate} onChange={(e) => setOverrideForm({ ...overrideForm, startDate: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Bis</label>
+                                        <input type="date" value={overrideForm.endDate} onChange={(e) => setOverrideForm({ ...overrideForm, endDate: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Wohnung</label>
+                                        <select value={overrideForm.wohnung} onChange={(e) => setOverrideForm({ ...overrideForm, wohnung: e.target.value })}>
+                                            <option value="all">Alle Wohnungen</option>
+                                            <option value="wohnung1">Wohnung I</option>
+                                            <option value="wohnung2">Wohnung II</option>
+                                            <option value="both">Beide Wohnungen (Paket)</option>
+                                        </select>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Preis pro Nacht (€)</label>
+                                        <input type="number" min="0" step="1" value={overrideForm.pricePerNight} onChange={(e) => setOverrideForm({ ...overrideForm, pricePerNight: e.target.value })} />
+                                    </div>
+                                    <div className="form-group" style={{ gridColumn: '1/-1' }}>
+                                        <label>Bezeichnung (erscheint auf der Rechnung)</label>
+                                        <input type="text" value={overrideForm.label} onChange={(e) => setOverrideForm({ ...overrideForm, label: e.target.value })} placeholder="z. B. Weihnachten &amp; Silvester" />
+                                    </div>
+                                </div>
+                                <button type="button" onClick={addPriceOverride}>+ Preiszeitraum hinzufügen</button>
+
+                                {priceOverrides.length > 0 && (
+                                    <div style={{ marginTop: '16px' }}>
+                                        {priceOverrides.map(ov => (
+                                            <div key={ov.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--licht-08)' }}>
+                                                <div>
+                                                    <strong>{ov.label}</strong> — {ov.startDate} bis {ov.endDate} · {ov.wohnung === 'all' ? 'alle Wohnungen' : wohnungLabel(ov.wohnung)} · {ov.pricePerNight}€/Nacht
+                                                </div>
+                                                <button type="button" className="danger" onClick={() => deletePriceOverride(ov.id)}>Löschen</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <h4 style={{ marginTop: '24px' }}>Schulferien Brandenburg</h4>
+                                <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
+                                    Rein informativ (keine automatische Preisänderung) — hilft bei der Kalender-Übersicht und lässt sich mit
+                                    individuellen Preiszeiträumen kombinieren, falls für Ferienzeiten andere Preise gelten sollen.
+                                </p>
+                                <div className="grid">
+                                    <div className="form-group">
+                                        <label>Von</label>
+                                        <input type="date" value={holidayForm.startDate} onChange={(e) => setHolidayForm({ ...holidayForm, startDate: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Bis</label>
+                                        <input type="date" value={holidayForm.endDate} onChange={(e) => setHolidayForm({ ...holidayForm, endDate: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Bezeichnung</label>
+                                        <input type="text" value={holidayForm.label} onChange={(e) => setHolidayForm({ ...holidayForm, label: e.target.value })} placeholder="z. B. Sommerferien 2028" />
+                                    </div>
+                                </div>
+                                <button type="button" onClick={addSchoolHoliday}>+ Ferienzeitraum hinzufügen</button>
+
+                                {schoolHolidays.length > 0 && (
+                                    <div style={{ marginTop: '16px' }}>
+                                        {schoolHolidays.map(h => (
+                                            <div key={h.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--licht-08)' }}>
+                                                <div><strong>{h.label}</strong> — {h.startDate} bis {h.endDate}</div>
+                                                <button type="button" className="danger" onClick={() => deleteSchoolHoliday(h.id)}>Löschen</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
                             <div className="card">
