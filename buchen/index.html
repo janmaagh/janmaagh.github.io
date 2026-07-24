@@ -704,6 +704,14 @@
             // Ermittelt den Preis für EINE konkrete Nacht — spiegelt exakt die Logik aus
             // dem Admin-Tool (Preiszeitraum > Wochenende Fr–So > regulärer Preis), damit
             // Gäste hier denselben Betrag sehen wie im späteren Angebot.
+            const getWeekendPriceFor = (dateStr, wohnung) => {
+                const year = parseInt(dateStr.split('-')[0], 10);
+                const season = (prices.seasonalWeekendPrices || []).find(s => s.year === year);
+                if (season && season[wohnung]) return season[wohnung];
+                const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
+                return prices[weekendKey] || null;
+            };
+
             const nightlyBasePrice = (dateStr, wohnung) => {
                 const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,...,5=Fr,6=Sa
                 const isWeekend = (day === 5 || day === 6 || day === 0);
@@ -716,8 +724,8 @@
                 if (override) return override.pricePerNight;
 
                 if (isWeekend) {
-                    const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
-                    if (prices[weekendKey]) return prices[weekendKey];
+                    const weekendPrice = getWeekendPriceFor(dateStr, wohnung);
+                    if (weekendPrice) return weekendPrice;
                 }
                 return prices[wohnung] || 0;
             };
