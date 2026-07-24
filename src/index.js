@@ -495,13 +495,23 @@ async function handlePublicSettings(request, env) {
   const downPaymentRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'down_payment_percent'`).first();
   const priceOverridesRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'price_overrides'`).first();
 
-  return jsonResponse({
+  // Explizit "no-store" — verhindert, dass Cloudflare oder der Browser diese
+  // Antwort zwischenspeichern und Gästen dadurch veraltete Preise anzeigen,
+  // nachdem im Admin-Tool z. B. neue Wochenend-Preiszeiträume gespeichert wurden.
+  return new Response(JSON.stringify({
     prices: pricesRow ? JSON.parse(pricesRow.value_json) : null,
     cancellationPolicy: policyRow ? JSON.parse(policyRow.value_json) : null,
     downPaymentPercent: downPaymentRow ? JSON.parse(downPaymentRow.value_json) : null,
     // Individuelle Preiszeiträume (Feiertage etc.) — damit Gäste auf der
     // öffentlichen Seite denselben Preis sehen wie im Admin-Tool berechnet.
     priceOverrides: priceOverridesRow ? JSON.parse(priceOverridesRow.value_json) : [],
+  }), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+    },
   });
 }
 
