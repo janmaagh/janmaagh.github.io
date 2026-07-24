@@ -589,7 +589,7 @@
                 // Preise, Stornobedingungen und Anzahlungs-% kommen jetzt live aus der
                 // Datenbank (öffentlicher, nicht-passwortgeschützter Endpunkt) statt aus
                 // dem längst veralteten lokalen Speicher.
-                fetch(`${API_BASE}/api/public-settings`)
+                fetch(`${API_BASE}/api/public-settings`, { cache: 'no-store' })
                     .then(res => res.ok ? res.json() : null)
                     .then(data => {
                         if (!data) return;
@@ -624,35 +624,6 @@
                         }
                     })
                     .catch(err => console.warn('Preise/Stornobedingungen konnten nicht live geladen werden, benutze Standardwerte:', err));
-
-                const savedPrices = localStorage.getItem('greenhouse_prices');
-                if (savedPrices) {
-                    try {
-                        const parsedPrices = JSON.parse(savedPrices);
-                        const migratedBasePersons = (parsedPrices.basePersons && typeof parsedPrices.basePersons === 'object')
-                            ? parsedPrices.basePersons
-                            : (typeof parsedPrices.basePersons === 'number'
-                                ? { wohnung1: parsedPrices.basePersons, wohnung2: parsedPrices.basePersons, both: parsedPrices.basePersons }
-                                : { wohnung1: 4, wohnung2: 4, both: 4 });
-                        const migratedFinalCleaning = (parsedPrices.finalCleaning && typeof parsedPrices.finalCleaning === 'object')
-                            ? parsedPrices.finalCleaning
-                            : (typeof parsedPrices.finalCleaning === 'number'
-                                ? { wohnung1: parsedPrices.finalCleaning, wohnung2: parsedPrices.finalCleaning, both: parsedPrices.finalCleaning }
-                                : { wohnung1: 60, wohnung2: 60, both: 60 });
-                        setPrices(prev => ({
-                            ...prev,
-                            ...parsedPrices,
-                            basePersons: migratedBasePersons,
-                            finalCleaning: migratedFinalCleaning,
-                            extraPersonPrices: (Array.isArray(parsedPrices.extraPersonPrices) && parsedPrices.extraPersonPrices.length > 0)
-                                ? parsedPrices.extraPersonPrices
-                                : prev.extraPersonPrices,
-                            projektSpaceCleaning: typeof parsedPrices.projektSpaceCleaning === 'number' ? parsedPrices.projektSpaceCleaning : 40,
-                        }));
-                    } catch (e) {
-                        console.log('Could not load prices');
-                    }
-                }
             }, []);
 
             // Airbnb-Belegung live synchronisieren (über den Cloudflare-Proxy /ical der Website)
