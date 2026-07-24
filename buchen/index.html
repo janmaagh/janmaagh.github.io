@@ -705,9 +705,8 @@
             // dem Admin-Tool (Preiszeitraum > Wochenende Fr–So > regulärer Preis), damit
             // Gäste hier denselben Betrag sehen wie im späteren Angebot.
             const getWeekendPriceFor = (dateStr, wohnung) => {
-                const year = parseInt(dateStr.split('-')[0], 10);
-                const season = (prices.seasonalWeekendPrices || []).find(s => s.year === year);
-                if (season && season[wohnung]) return season[wohnung];
+                const period = (prices.weekendPricePeriods || []).find(p => dateStr >= p.startDate && dateStr <= p.endDate);
+                if (period && period[wohnung]) return period[wohnung];
                 const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
                 return prices[weekendKey] || null;
             };
