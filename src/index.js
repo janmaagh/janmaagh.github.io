@@ -493,11 +493,15 @@ async function handlePublicSettings(request, env) {
   const pricesRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'prices'`).first();
   const policyRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'cancellation_policy'`).first();
   const downPaymentRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'down_payment_percent'`).first();
+  const priceOverridesRow = await env.DB.prepare(`SELECT value_json FROM settings WHERE key = 'price_overrides'`).first();
 
   return jsonResponse({
     prices: pricesRow ? JSON.parse(pricesRow.value_json) : null,
     cancellationPolicy: policyRow ? JSON.parse(policyRow.value_json) : null,
     downPaymentPercent: downPaymentRow ? JSON.parse(downPaymentRow.value_json) : null,
+    // Individuelle Preiszeiträume (Feiertage etc.) — damit Gäste auf der
+    // öffentlichen Seite denselben Preis sehen wie im Admin-Tool berechnet.
+    priceOverrides: priceOverridesRow ? JSON.parse(priceOverridesRow.value_json) : [],
   });
 }
 
