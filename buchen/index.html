@@ -705,14 +705,16 @@
             // dem Admin-Tool (Preiszeitraum > Wochenende Fr–So > regulärer Preis), damit
             // Gäste hier denselben Betrag sehen wie im späteren Angebot.
             const nightlyBasePrice = (dateStr, wohnung) => {
+                const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,...,5=Fr,6=Sa
+                const isWeekend = (day === 5 || day === 6 || day === 0);
+
                 const override = priceOverrides.find(ov =>
                     dateStr >= ov.startDate && dateStr <= ov.endDate &&
-                    (ov.wohnung === wohnung || ov.wohnung === 'all')
+                    (ov.wohnung === wohnung || ov.wohnung === 'all') &&
+                    (!ov.weekendOnly || isWeekend)
                 );
                 if (override) return override.pricePerNight;
 
-                const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,...,5=Fr,6=Sa
-                const isWeekend = (day === 5 || day === 6 || day === 0);
                 if (isWeekend) {
                     const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
                     if (prices[weekendKey]) return prices[weekendKey];
