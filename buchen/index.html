@@ -479,6 +479,7 @@
                 deposit: 100,
                 extraServices: [],
             });
+            const [priceOverrides, setPriceOverrides] = useState([]);
             const [liveCancellationPolicy, setLiveCancellationPolicy] = useState(null);
 
             const [bookings, setBookings] = useState([]);
@@ -618,6 +619,9 @@
                         if (data.cancellationPolicy) {
                             setLiveCancellationPolicy(data.cancellationPolicy);
                         }
+                        if (Array.isArray(data.priceOverrides)) {
+                            setPriceOverrides(data.priceOverrides);
+                        }
                     })
                     .catch(err => console.warn('Preise/Stornobedingungen konnten nicht live geladen werden, benutze Standardwerte:', err));
 
@@ -691,6 +695,42 @@
                 return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
             };
 
+            const addDaysToDateStr = (dateStr, days) => {
+                const d = new Date(dateStr + 'T00:00:00Z');
+                d.setUTCDate(d.getUTCDate() + days);
+                return d.toISOString().split('T')[0];
+            };
+
+            // Ermittelt den Preis für EINE konkrete Nacht — spiegelt exakt die Logik aus
+            // dem Admin-Tool (Preiszeitraum > Wochenende Fr–So > regulärer Preis), damit
+            // Gäste hier denselben Betrag sehen wie im späteren Angebot.
+            const nightlyBasePrice = (dateStr, wohnung) => {
+                const override = priceOverrides.find(ov =>
+                    dateStr >= ov.startDate && dateStr <= ov.endDate &&
+                    (ov.wohnung === wohnung || ov.wohnung === 'all')
+                );
+                if (override) return override.pricePerNight;
+
+                const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,...,5=Fr,6=Sa
+                const isWeekend = (day === 5 || day === 6 || day === 0);
+                if (isWeekend) {
+                    const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
+                    if (prices[weekendKey]) return prices[weekendKey];
+                }
+                return prices[wohnung] || 0;
+            };
+
+            const calculateStayBasePrice = (checkIn, checkOut, wohnung) => {
+                if (!checkIn || !checkOut) return 0;
+                let total = 0;
+                let cur = checkIn;
+                while (cur < checkOut) {
+                    total += nightlyBasePrice(cur, wohnung);
+                    cur = addDaysToDateStr(cur, 1);
+                }
+                return total;
+            };
+
             const getBasePersons = (wohnung) => {
                 if (prices.basePersons && typeof prices.basePersons === 'object') {
                     return prices.basePersons[wohnung] || 4;
@@ -716,12 +756,7 @@
                 if (!formData.checkIn || !formData.checkOut) return 0;
                 const nights = calculateNights(formData.checkIn, formData.checkOut);
 
-                let basePrice = 0;
-                if (formData.wohnung === 'wohnung1') basePrice = prices.wohnung1;
-                else if (formData.wohnung === 'wohnung2') basePrice = prices.wohnung2;
-                else if (formData.wohnung === 'both') basePrice = prices.both;
-
-                let total = basePrice * nights;
+                let total = calculateStayBasePrice(formData.checkIn, formData.checkOut, formData.wohnung);
 
                 const basePersonsForWohnung = getBasePersons(formData.wohnung);
                 if (formData.persons > basePersonsForWohnung) {
@@ -1201,9 +1236,7 @@
                                     <div className="price-row">
                                         <span>Zimmerpreis ({nights}×):</span>
                                         <span>
-                                            {formData.wohnung === 'wohnung1' ? (nights * prices.wohnung1).toFixed(2) : 
-                                             formData.wohnung === 'wohnung2' ? (nights * prices.wohnung2).toFixed(2) :
-                                             (nights * prices.both).toFixed(2)}€
+                                            {calculateStayBasePrice(formData.checkIn, formData.checkOut, formData.wohnung).toFixed(2)}€
                                         </span>
                                     </div>
 
