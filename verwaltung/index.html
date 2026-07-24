@@ -1655,7 +1655,7 @@ Lucia und Jan`;
 
             const nightlyBasePrice = (dateStr, wohnung) => {
                 const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,1=Mo,...,5=Fr,6=Sa
-                const isWeekend = (day === 5 || day === 6 || day === 0); // Fr, Sa, So
+                const isWeekend = (day === 5 || day === 6); // Nacht Fr->Sa und Nacht Sa->So (Sonntagnacht = wieder Wochentag)
 
                 const override = findBestOverride(dateStr, wohnung, isWeekend);
                 if (override) return override.pricePerNight;
@@ -1690,7 +1690,7 @@ Lucia und Jan`;
                 let cur = checkIn;
                 while (cur < checkOut) {
                     const day = new Date(cur + 'T00:00:00Z').getUTCDay();
-                    const isWeekend = (day === 5 || day === 6 || day === 0);
+                    const isWeekend = (day === 5 || day === 6); // Nacht Fr->Sa und Nacht Sa->So
                     const override = findBestOverride(cur, wohnung, isWeekend);
                     let price, label;
                     if (override) {
