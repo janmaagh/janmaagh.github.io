@@ -947,7 +947,7 @@
             const today = new Date();
             const [calendarYear, setCalendarYear] = useState(today.getFullYear());
             const [calendarMonthIndex, setCalendarMonthIndex] = useState(today.getMonth()); // 0-11
-            const [overrideForm, setOverrideForm] = useState({ startDate: '', endDate: '', wohnung: 'all', pricePerNight: '', label: '' });
+            const [overrideForm, setOverrideForm] = useState({ startDate: '', endDate: '', wohnung: 'all', pricePerNight: '', label: '', weekendOnly: false });
             const [holidayForm, setHolidayForm] = useState({ startDate: '', endDate: '', label: '' });
 
 
@@ -1620,14 +1620,16 @@ Lucia und Jan`;
             // 2. Sonst: Wochenend-Preis (Fr/Sa/So), falls gepflegt
             // 3. Sonst: regulärer Wochentag-Preis (Mo-Do)
             const nightlyBasePrice = (dateStr, wohnung) => {
+                const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,1=Mo,...,5=Fr,6=Sa
+                const isWeekend = (day === 5 || day === 6 || day === 0); // Fr, Sa, So
+
                 const override = priceOverrides.find(ov =>
                     dateStr >= ov.startDate && dateStr <= ov.endDate &&
-                    (ov.wohnung === wohnung || ov.wohnung === 'all')
+                    (ov.wohnung === wohnung || ov.wohnung === 'all') &&
+                    (!ov.weekendOnly || isWeekend) // "nur Wochenende"-Overrides an Wochentagen ignorieren
                 );
                 if (override) return override.pricePerNight;
 
-                const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,1=Mo,...,5=Fr,6=Sa
-                const isWeekend = (day === 5 || day === 6 || day === 0); // Fr, Sa, So
                 if (isWeekend) {
                     const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
                     if (prices[weekendKey]) return prices[weekendKey];
@@ -1657,12 +1659,13 @@ Lucia und Jan`;
                 const groups = {};
                 let cur = checkIn;
                 while (cur < checkOut) {
-                    const override = priceOverrides.find(ov =>
-                        cur >= ov.startDate && cur <= ov.endDate &&
-                        (ov.wohnung === wohnung || ov.wohnung === 'all')
-                    );
                     const day = new Date(cur + 'T00:00:00Z').getUTCDay();
                     const isWeekend = (day === 5 || day === 6 || day === 0);
+                    const override = priceOverrides.find(ov =>
+                        cur >= ov.startDate && cur <= ov.endDate &&
+                        (ov.wohnung === wohnung || ov.wohnung === 'all') &&
+                        (!ov.weekendOnly || isWeekend)
+                    );
                     let price, label;
                     if (override) {
                         price = override.pricePerNight;
@@ -2666,9 +2669,10 @@ Deutschland`;
                     wohnung: overrideForm.wohnung,
                     pricePerNight: parseFloat(overrideForm.pricePerNight) || 0,
                     label: overrideForm.label || 'Sondertarif',
+                    weekendOnly: !!overrideForm.weekendOnly,
                 };
                 setPriceOverrides([...priceOverrides, newOverride]);
-                setOverrideForm({ startDate: '', endDate: '', wohnung: 'all', pricePerNight: '', label: '' });
+                setOverrideForm({ startDate: '', endDate: '', wohnung: 'all', pricePerNight: '', label: '', weekendOnly: false });
             };
 
             const deletePriceOverride = (id) => setPriceOverrides(priceOverrides.filter(ov => ov.id !== id));
@@ -5179,6 +5183,12 @@ Deutschland
                                         <label>Bezeichnung (erscheint auf der Rechnung)</label>
                                         <input type="text" value={overrideForm.label} onChange={(e) => setOverrideForm({ ...overrideForm, label: e.target.value })} placeholder="z. B. Weihnachten &amp; Silvester" />
                                     </div>
+                                    <div className="form-group" style={{ gridColumn: '1/-1' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'normal' }}>
+                                            <input type="checkbox" checked={overrideForm.weekendOnly} onChange={(e) => setOverrideForm({ ...overrideForm, weekendOnly: e.target.checked })} />
+                                            Nur Wochenende (Fr–So) — Wochentage in diesem Zeitraum bleiben beim regulären Preis
+                                        </label>
+                                    </div>
                                 </div>
                                 <button type="button" onClick={addPriceOverride}>+ Preiszeitraum hinzufügen</button>
 
@@ -5187,7 +5197,7 @@ Deutschland
                                         {priceOverrides.map(ov => (
                                             <div key={ov.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--licht-08)' }}>
                                                 <div>
-                                                    <strong>{ov.label}</strong> — {ov.startDate} bis {ov.endDate} · {ov.wohnung === 'all' ? 'alle Wohnungen' : wohnungLabel(ov.wohnung)} · {ov.pricePerNight}€/Nacht
+                                                    <strong>{ov.label}</strong> — {ov.startDate} bis {ov.endDate} · {ov.wohnung === 'all' ? 'alle Wohnungen' : wohnungLabel(ov.wohnung)} · {ov.pricePerNight}€/Nacht{ov.weekendOnly ? ' · nur Fr–So' : ''}
                                                 </div>
                                                 <button type="button" className="danger" onClick={() => deletePriceOverride(ov.id)}>Löschen</button>
                                             </div>
