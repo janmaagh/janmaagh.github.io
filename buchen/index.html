@@ -702,7 +702,7 @@
 
             const nightlyBasePrice = (dateStr, wohnung) => {
                 const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,...,5=Fr,6=Sa
-                const isWeekend = (day === 5 || day === 6 || day === 0);
+                const isWeekend = (day === 5 || day === 6); // Nacht Fr->Sa und Nacht Sa->So
 
                 const override = findBestOverride(dateStr, wohnung, isWeekend);
                 if (override) return override.pricePerNight;
@@ -1062,9 +1062,9 @@
                                 <div className="form-group">
                                     <label>Wohnung *</label>
                                     <select value={formData.wohnung} onChange={(e) => setFormData({ ...formData, wohnung: e.target.value, checkIn: '', checkOut: '' })}>
-                                        <option value="wohnung1">Wohnung I ({prices.wohnung1}€/Nacht)</option>
-                                        <option value="wohnung2">Wohnung II ({prices.wohnung2}€/Nacht)</option>
-                                        <option value="both">Beide Wohnungen ({prices.both}€/Nacht)</option>
+                                        <option value="wohnung1">Wohnung I</option>
+                                        <option value="wohnung2">Wohnung II</option>
+                                        <option value="both">Beide Wohnungen</option>
                                     </select>
                                 </div>
                                 <div className="form-group">
