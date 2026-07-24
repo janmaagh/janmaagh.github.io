@@ -915,9 +915,10 @@
                 weekendWohnung1: 0,
                 weekendWohnung2: 0,
                 weekendBoth: 0,
-                // Saison-Wochenendpreise je Kalenderjahr — z. B. [{ year: 2026, wohnung1: 95, wohnung2: 80, both: 165 }].
-                // Haben Vorrang vor den pauschalen Wochenend-Preisen oben, sobald das Jahr passt.
-                seasonalWeekendPrices: [],
+                // Wochenend-Preiszeiträume — beliebige Von/Bis-Zeiträume (z. B. nur Sommer,
+                // nur ein Halbjahr, ein ganzes Jahr...), Vorrang vor den pauschalen
+                // Wochenend-Preisen unten. Beispiel: [{ startDate: '2027-01-01', endDate: '2027-12-31', wohnung1: 95, wohnung2: 80, both: 165, label: 'Saison 2027' }]
+                weekendPricePeriods: [],
                 basePersons: { wohnung1: 4, wohnung2: 4, both: 4 },
                 extraPersonPrices: [15, 15, 15, 15], // Preise für Person 5, 6, 7, 8
                 earlyCheckin: 20,
@@ -1626,9 +1627,8 @@ Lucia und Jan`;
             // Ermittelt den Wochenend-Preis für ein konkretes Jahr: zuerst Saison-Preis
             // (falls für dieses Jahr hinterlegt), sonst der pauschale Wochenend-Preis.
             const getWeekendPriceFor = (dateStr, wohnung) => {
-                const year = parseInt(dateStr.split('-')[0], 10);
-                const season = (prices.seasonalWeekendPrices || []).find(s => s.year === year);
-                if (season && season[wohnung]) return season[wohnung];
+                const period = (prices.weekendPricePeriods || []).find(p => dateStr >= p.startDate && dateStr <= p.endDate);
+                if (period && period[wohnung]) return period[wohnung];
                 const weekendKey = wohnung === 'wohnung1' ? 'weekendWohnung1' : wohnung === 'wohnung2' ? 'weekendWohnung2' : 'weekendBoth';
                 return prices[weekendKey] || null;
             };
@@ -2691,28 +2691,33 @@ Deutschland`;
 
             const deletePriceOverride = (id) => setPriceOverrides(priceOverrides.filter(ov => ov.id !== id));
 
-            const [seasonForm, setSeasonForm] = useState({ year: new Date().getFullYear() + 1, wohnung1: '', wohnung2: '', both: '' });
+            const [seasonForm, setSeasonForm] = useState({ id: null, startDate: '', endDate: '', wohnung1: '', wohnung2: '', both: '', label: '' });
 
-            const addOrUpdateSeasonalWeekendPrice = () => {
-                const year = parseInt(seasonForm.year, 10);
-                if (!year) { alert('Bitte ein gültiges Jahr angeben.'); return; }
+            const addOrUpdateWeekendPricePeriod = () => {
+                if (!seasonForm.startDate || !seasonForm.endDate) { alert('Bitte Start- und Enddatum angeben.'); return; }
                 const newEntry = {
-                    year,
+                    id: seasonForm.id || 'wp-' + Date.now(),
+                    startDate: seasonForm.startDate,
+                    endDate: seasonForm.endDate,
                     wohnung1: parseFloat(seasonForm.wohnung1) || 0,
                     wohnung2: parseFloat(seasonForm.wohnung2) || 0,
                     both: parseFloat(seasonForm.both) || 0,
+                    label: seasonForm.label || `${seasonForm.startDate} – ${seasonForm.endDate}`,
                 };
-                const existing = (prices.seasonalWeekendPrices || []).filter(s => s.year !== year);
-                setPrices({ ...prices, seasonalWeekendPrices: [...existing, newEntry].sort((a, b) => a.year - b.year) });
-                setSeasonForm({ year: year + 1, wohnung1: '', wohnung2: '', both: '' });
+                const existing = (prices.weekendPricePeriods || []).filter(p => p.id !== newEntry.id);
+                setPrices({ ...prices, weekendPricePeriods: [...existing, newEntry].sort((a, b) => a.startDate.localeCompare(b.startDate)) });
+                setSeasonForm({ id: null, startDate: '', endDate: '', wohnung1: '', wohnung2: '', both: '', label: '' });
             };
 
-            const editSeasonalWeekendPrice = (season) => {
-                setSeasonForm({ year: season.year, wohnung1: season.wohnung1 || '', wohnung2: season.wohnung2 || '', both: season.both || '' });
+            const editWeekendPricePeriod = (period) => {
+                setSeasonForm({
+                    id: period.id, startDate: period.startDate, endDate: period.endDate,
+                    wohnung1: period.wohnung1 || '', wohnung2: period.wohnung2 || '', both: period.both || '', label: period.label || '',
+                });
             };
 
-            const deleteSeasonalWeekendPrice = (year) => {
-                setPrices({ ...prices, seasonalWeekendPrices: (prices.seasonalWeekendPrices || []).filter(s => s.year !== year) });
+            const deleteWeekendPricePeriod = (id) => {
+                setPrices({ ...prices, weekendPricePeriods: (prices.weekendPricePeriods || []).filter(p => p.id !== id) });
             };
 
             const addSchoolHoliday = () => {
@@ -5015,15 +5020,20 @@ Deutschland
                                     </div>
                                 </div>
 
-                                <h4 style={{ marginTop: '20px', marginBottom: '10px' }}>Saison-Wochenendpreise (je Kalenderjahr)</h4>
+                                <h4 style={{ marginTop: '20px', marginBottom: '10px' }}>Wochenend-Preiszeiträume (beliebiger Von/Bis-Zeitraum)</h4>
                                 <p style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: 0 }}>
-                                    Wochenend-Preise (Fr–So) für ein bestimmtes Jahr im Voraus festlegen — z. B. schon jetzt für 2027 andere
-                                    Preise als 2026. Haben Vorrang vor den pauschalen Wochenend-Preisen weiter unten.
+                                    Wochenend-Preise (Fr–So) für einen beliebigen Zeitraum festlegen — ein ganzes Jahr, ein Halbjahr, nur den
+                                    Sommer, einzelne Monate... ganz nach Bedarf, auch schon im Voraus für die nächste Saison. Haben Vorrang
+                                    vor den pauschalen Wochenend-Preisen weiter unten.
                                 </p>
                                 <div className="grid">
                                     <div className="form-group">
-                                        <label>Jahr</label>
-                                        <input type="number" step="1" value={seasonForm.year} onChange={(e) => setSeasonForm({ ...seasonForm, year: e.target.value })} />
+                                        <label>Von</label>
+                                        <input type="date" value={seasonForm.startDate} onChange={(e) => setSeasonForm({ ...seasonForm, startDate: e.target.value })} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Bis</label>
+                                        <input type="date" value={seasonForm.endDate} onChange={(e) => setSeasonForm({ ...seasonForm, endDate: e.target.value })} />
                                     </div>
                                     <div className="form-group">
                                         <label>Wohnung I – Wochenende (€/Nacht)</label>
@@ -5037,19 +5047,26 @@ Deutschland
                                         <label>Beide Wohnungen – Wochenende (€/Nacht)</label>
                                         <input type="number" min="0" step="1" value={seasonForm.both} onChange={(e) => setSeasonForm({ ...seasonForm, both: e.target.value })} />
                                     </div>
+                                    <div className="form-group">
+                                        <label>Bezeichnung (optional)</label>
+                                        <input type="text" value={seasonForm.label} onChange={(e) => setSeasonForm({ ...seasonForm, label: e.target.value })} placeholder="z. B. Sommersaison 2027" />
+                                    </div>
                                 </div>
-                                <button type="button" onClick={addOrUpdateSeasonalWeekendPrice}>+ Saison speichern</button>
+                                <button type="button" onClick={addOrUpdateWeekendPricePeriod}>{seasonForm.id ? '✓ Änderungen speichern' : '+ Zeitraum speichern'}</button>
+                                {seasonForm.id && (
+                                    <button type="button" className="secondary" onClick={() => setSeasonForm({ id: null, startDate: '', endDate: '', wohnung1: '', wohnung2: '', both: '', label: '' })} style={{ marginLeft: '8px' }}>Abbrechen</button>
+                                )}
 
-                                {(prices.seasonalWeekendPrices || []).length > 0 && (
+                                {(prices.weekendPricePeriods || []).length > 0 && (
                                     <div style={{ marginTop: '16px' }}>
-                                        {prices.seasonalWeekendPrices.map(s => (
-                                            <div key={s.year} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--licht-08)' }}>
+                                        {prices.weekendPricePeriods.map(p => (
+                                            <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--licht-08)' }}>
                                                 <div>
-                                                    <strong>Saison {s.year}</strong> — Wohnung I: {s.wohnung1}€ · Wohnung II: {s.wohnung2}€ · Beide: {s.both}€
+                                                    <strong>{p.label}</strong> — {p.startDate} bis {p.endDate} · Wohnung I: {p.wohnung1}€ · Wohnung II: {p.wohnung2}€ · Beide: {p.both}€
                                                 </div>
                                                 <div style={{ display: 'flex', gap: '8px' }}>
-                                                    <button type="button" className="secondary" onClick={() => editSeasonalWeekendPrice(s)}>✏️ Bearbeiten</button>
-                                                    <button type="button" className="danger" onClick={() => deleteSeasonalWeekendPrice(s.year)}>Löschen</button>
+                                                    <button type="button" className="secondary" onClick={() => editWeekendPricePeriod(p)}>✏️ Bearbeiten</button>
+                                                    <button type="button" className="danger" onClick={() => deleteWeekendPricePeriod(p.id)}>Löschen</button>
                                                 </div>
                                             </div>
                                         ))}
