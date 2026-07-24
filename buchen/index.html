@@ -682,35 +682,36 @@
                 return prices[weekendKey] || null;
             };
 
-            // Findet bei MEHREREN passenden Preiszeiträumen für dieselbe Nacht den
-            // spezifischsten — spiegelt exakt die Logik aus dem Admin-Tool.
-            const findBestOverride = (dateStr, wohnung, isWeekend) => {
+            // Findet einen passenden individuellen Preiszeitraum — spiegelt exakt die
+            // Logik aus dem Admin-Tool.
+            const findOverrideForNight = (dateStr, wohnung, requireWeekendOnly) => {
                 const candidates = priceOverrides.filter(ov =>
                     dateStr >= ov.startDate && dateStr <= ov.endDate &&
                     (ov.wohnung === wohnung || ov.wohnung === 'all') &&
-                    (!ov.weekendOnly || isWeekend)
+                    (requireWeekendOnly ? !!ov.weekendOnly : !ov.weekendOnly)
                 );
                 if (candidates.length === 0) return null;
                 const exactWohnung = candidates.filter(c => c.wohnung === wohnung);
-                const pool = exactWohnung.length > 0 ? exactWohnung : candidates;
-                if (isWeekend) {
-                    const weekendSpecific = pool.filter(c => c.weekendOnly);
-                    if (weekendSpecific.length > 0) return weekendSpecific[0];
-                }
-                return pool[0];
+                return (exactWohnung.length > 0 ? exactWohnung : candidates)[0];
             };
 
+            // Wochenend-Regeln haben an Fr/Sa-Nächten IMMER Vorrang vor einem
+            // allgemeinen Sondertarif — spiegelt exakt die Logik aus dem Admin-Tool.
             const nightlyBasePrice = (dateStr, wohnung) => {
                 const day = new Date(dateStr + 'T00:00:00Z').getUTCDay(); // 0=So,...,5=Fr,6=Sa
                 const isWeekend = (day === 5 || day === 6); // Nacht Fr->Sa und Nacht Sa->So
 
-                const override = findBestOverride(dateStr, wohnung, isWeekend);
-                if (override) return override.pricePerNight;
-
                 if (isWeekend) {
+                    const weekendOverride = findOverrideForNight(dateStr, wohnung, true);
+                    if (weekendOverride) return weekendOverride.pricePerNight;
+
                     const weekendPrice = getWeekendPriceFor(dateStr, wohnung);
                     if (weekendPrice) return weekendPrice;
                 }
+
+                const generalOverride = findOverrideForNight(dateStr, wohnung, false);
+                if (generalOverride) return generalOverride.pricePerNight;
+
                 return prices[wohnung] || 0;
             };
 
