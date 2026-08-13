@@ -246,6 +246,13 @@
             background: var(--accent);
         }
 
+        button:disabled,
+        button:disabled:hover {
+            opacity: 0.4;
+            cursor: not-allowed;
+            filter: grayscale(0.6);
+        }
+
         button.secondary {
             background: var(--tintenblau);
             color: var(--licht);
@@ -4833,6 +4840,21 @@ Deutschland
                                     >
                                         {editingInvoiceId ? 'Änderungen speichern & E-Mail-Vorschau' : 'Rechnung erstellen & E-Mail-Vorschau'}
                                     </button>
+
+                                    {(() => {
+                                        const fehlend = [
+                                            !invoiceForm.guestName && 'Name des Gastes',
+                                            !invoiceForm.guestEmail && 'E-Mail',
+                                            !invoiceForm.guestAddress && 'Adresse des Gastes',
+                                            invoiceForm.items.every(it => !it.description) && 'mindestens eine Position mit Beschreibung',
+                                        ].filter(Boolean);
+                                        if (fehlend.length === 0) return null;
+                                        return (
+                                            <div style={{ fontSize: '12px', color: 'var(--bernstein)', marginTop: '10px', textAlign: 'center', lineHeight: 1.5 }}>
+                                                Noch nicht möglich – es fehlt: {fehlend.join(', ')}
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
                             )}
 
