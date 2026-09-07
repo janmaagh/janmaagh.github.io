@@ -1058,8 +1058,13 @@ Lucia und Jan`;
                 dogFee: false,
                 dogCount: 1,
                 projektSpace: false,
-                items: [{ description: '', quantity: 1, unitPrice: 0 }],
-                vatMode: 'kleinunternehmer', // 'kleinunternehmer' | '7' | '19'
+                items: [{ description: '', quantity: 1, unitPrice: 0, vatRate: 0.19 }],
+                // Keine Kleinunternehmerregelung mehr (§ 19 UStG trifft laut Steuerberater nicht
+                // zu). Jede Position trägt jetzt ihren eigenen Steuersatz (vatRate) — 7% für
+                // Übernachtung u. direkte Nebenleistungen (§ 12 Abs. 2 Nr. 11 UStG), 19% für
+                // Projektraum u. sonstige Leistungen. vatMode dient nur noch als Fallback für
+                // ältere Rechnungen, deren Positionen noch kein vatRate-Feld haben.
+                vatMode: '19', // Fallback für Alt-Positionen ohne eigenes vatRate: '7' | '19'
                 discountPercent: 0,
                 notes: '',
             };
@@ -1529,7 +1534,7 @@ Lucia und Jan`;
                     serviceStart: invoice.serviceStart || '',
                     serviceEnd: invoice.serviceEnd || '',
                     items: invoice.items && invoice.items.length ? invoice.items : [{ description: '', quantity: 1, unitPrice: 0 }],
-                    vatMode: invoice.vatMode || 'kleinunternehmer',
+                    vatMode: invoice.vatMode || '19',
                     discountPercent: invoice.discountPercent || 0,
                     notes: invoice.notes || '',
                 });
@@ -1733,6 +1738,7 @@ Lucia und Jan`;
                         : `Unterkunft ${wl} (${g.count} ${g.count === 1 ? 'Nacht' : 'Nächte'})`,
                     quantity: g.count,
                     unitPrice: g.price,
+                    vatRate: VAT_RATE_ACCOMMODATION,
                 }));
             };
 
@@ -1742,6 +1748,23 @@ Lucia und Jan`;
                 const end = new Date(checkOut);
                 return Math.ceil((end - start) / (1000 * 60 * 60 * 24));
             };
+
+            // Greenhouse Market GbR unterliegt der Regelbesteuerung (keine Kleinunternehmerregelung
+            // nach § 19 UStG mehr — laut Steuerberater unzutreffend).
+            //
+            // Übernachtungsleistungen (Vermietung von Wohn-/Schlafräumen zur kurzfristigen
+            // Beherbergung) sowie die unmittelbar der Beherbergung dienenden Nebenleistungen
+            // (Zusatzperson, Early Check-in, Late Checkout, Endreinigung, Hundegebühr) unterliegen
+            // gem. § 12 Abs. 2 Nr. 11 UStG dem ermäßigten Steuersatz von 7%.
+            // Der Projektraum ist keine Übernachtungsleistung (Kreativ-/Eventraum-Vermietung) und
+            // unterliegt daher dem regulären Steuersatz von 19% (§ 12 Abs. 1 UStG).
+            //
+            // calculateTotal()/offer.total/booking.total bleiben bewusst NETTO-Beträge (wie schon
+            // vorher) — die Bruttobeträge werden an den jeweiligen Ausgabestellen (Angebot,
+            // Rechnung, Buchungsformular) daraus abgeleitet, damit Anzahlung/Restbetrag/Rechnung
+            // immer exakt zum zuvor kommunizierten Angebot passen.
+            const VAT_RATE_ACCOMMODATION = 0.07; // § 12 Abs. 2 Nr. 11 UStG
+            const VAT_RATE_STANDARD = 0.19; // § 12 Abs. 1 UStG
 
             const calculateTotal = (formData) => {
                 if (!formData.checkIn || !formData.checkOut) return 0;
@@ -1770,6 +1793,71 @@ Lucia und Jan`;
                 if (discountPercent > 0) total -= total * (discountPercent / 100);
 
                 return total;
+            };
+
+            // Wie calculateTotal(), unterteilt den Nettobetrag aber nach Steuersatz: Übernachtung
+            // und die unmittelbar damit zusammenhängenden Nebenleistungen (Zusatzperson, Early
+            // Check-in, Late Checkout, Endreinigung, Hundegebühr) fallen unter den ermäßigten Satz
+            // von 7% (§ 12 Abs. 2 Nr. 11 UStG), der Projektraum unter den regulären Satz von 19%.
+            // Der Rabatt wird anteilig auf beide Teilbeträge angewendet — in Summe identisch mit
+            // calculateTotal(formData).
+            const calculateNetSplit = (formData) => {
+                if (!formData.checkIn || !formData.checkOut) return { accommodationNet: 0, projektraumNet: 0 };
+                const nights = calculateNights(formData.checkIn, formData.checkOut);
+
+                let accommodationNet = calculateStayBasePrice(formData.checkIn, formData.checkOut, formData.wohnung);
+
+                const basePersonsForWohnung = getBasePersons(formData.wohnung);
+                if (formData.persons > basePersonsForWohnung) {
+                    for (let i = basePersonsForWohnung; i < formData.persons; i++) {
+                        const extraPersonIndex = i - basePersonsForWohnung;
+                        const personPrice = getExtraPersonPrice(extraPersonIndex);
+                        accommodationNet += personPrice * nights;
+                    }
+                }
+
+                if (formData.earlyCheckin) accommodationNet += prices.earlyCheckin;
+                if (formData.lateCheckout) accommodationNet += prices.lateCheckout;
+                if (formData.finalCleaning) accommodationNet += getFinalCleaning(formData.wohnung);
+                if (formData.dogFee) accommodationNet += prices.dogFee * formData.dogCount * nights;
+
+                let projektraumNet = 0;
+                if (formData.projektSpace) projektraumNet += prices.projektSpace * nights;
+                if (formData.projektSpaceCleaning) projektraumNet += prices.projektSpaceCleaning;
+
+                const discountPercent = Math.max(0, Math.min(100, parseFloat(formData.discountPercent) || 0));
+                const discountFactor = 1 - discountPercent / 100;
+
+                return {
+                    accommodationNet: accommodationNet * discountFactor,
+                    projektraumNet: projektraumNet * discountFactor,
+                };
+            };
+
+            // Ermittelt USt und Bruttobetrag aus einem { accommodationNet, projektraumNet }-Split.
+            const grossFromNetSplit = (split) => {
+                const accVat = split.accommodationNet * VAT_RATE_ACCOMMODATION;
+                const projVat = split.projektraumNet * VAT_RATE_STANDARD;
+                return {
+                    net: split.accommodationNet + split.projektraumNet,
+                    vat: accVat + projVat,
+                    gross: split.accommodationNet + accVat + split.projektraumNet + projVat,
+                    accVat,
+                    projVat,
+                };
+            };
+
+            // Für bereits gespeicherte Datensätze (Angebot/Buchung/Anfrage), deren Netto-GESAMTBETRAG
+            // beim Erstellen eingefroren wurde: ermittelt aus den aktuell hinterlegten Parametern nur
+            // das VERHÄLTNIS Übernachtung : Projektraum und wendet dieses auf den eingefrorenen
+            // Betrag an. So bleibt die Summe aus beiden Teilen immer exakt gleich dem eingefrorenen
+            // Betrag, auch wenn sich die Preise in den Einstellungen zwischenzeitlich geändert haben.
+            const splitNetByRatio = (formData, frozenNetTotal) => {
+                const live = calculateNetSplit(formData);
+                const liveSum = live.accommodationNet + live.projektraumNet;
+                const accShare = liveSum > 0 ? live.accommodationNet / liveSum : 1;
+                const total = safeNum(frozenNetTotal);
+                return { accommodationNet: total * accShare, projektraumNet: total * (1 - accShare) };
             };
 
             const createOffer = async () => {
@@ -2001,17 +2089,38 @@ LEISTUNGEN & PREISE
 
                 if (offer.discountPercent > 0) {
                     const subtotal = calculateTotal({ ...offer, discountPercent: 0 });
-                    mailContent += `\nZwischensumme: ${subtotal.toFixed(2)}€\nRabatt (${offer.discountPercent}%): -${(subtotal - safeNum(offer.total)).toFixed(2)}€\n`;
+                    mailContent += `\nZwischensumme (netto): ${subtotal.toFixed(2)}€\nRabatt (${offer.discountPercent}%): -${(subtotal - safeNum(offer.total)).toFixed(2)}€\n`;
                 }
 
-                mailContent += `\nGESAMTPREIS: ${safeNum(offer.total).toFixed(2)}€
+                // Nettobetrag zunächst nach Steuersatz aufteilen (7% Übernachtung/Nebenleistungen,
+                // 19% Projektraum — Verhältnis aus den aktuellen Positionsdaten, Summe fix auf den
+                // eingefrorenen offer.total). Anzahlung/Restbetrag werden je Teilbetrag zuerst netto
+                // ermittelt (exakt wie bei der späteren Rechnungsstellung über
+                // applyBookingLegToInvoice) und erst danach um die jeweilige USt ergänzt — so
+                // stimmt der hier kommunizierte Betrag exakt mit der Rechnung überein.
+                const offerSplitMail = splitNetByRatio(offer, offer.total);
+                const offerGrossMail = grossFromNetSplit(offerSplitMail);
+                const netAccDownPaymentMail = Math.round(offerSplitMail.accommodationNet * (downPaymentPercent / 100));
+                const netProjDownPaymentMail = Math.round(offerSplitMail.projektraumNet * (downPaymentPercent / 100));
+                const netAccRemainingMail = offerSplitMail.accommodationNet - netAccDownPaymentMail;
+                const netProjRemainingMail = offerSplitMail.projektraumNet - netProjDownPaymentMail;
+                const grossDownPaymentMail = netAccDownPaymentMail * (1 + VAT_RATE_ACCOMMODATION) + netProjDownPaymentMail * (1 + VAT_RATE_STANDARD);
+                const grossRemainingMail = netAccRemainingMail * (1 + VAT_RATE_ACCOMMODATION) + netProjRemainingMail * (1 + VAT_RATE_STANDARD);
+
+                mailContent += `\nNettobetrag Übernachtung u. Nebenleistungen: ${offerSplitMail.accommodationNet.toFixed(2)}€
+zzgl. 7% USt (§ 12 Abs. 2 Nr. 11 UStG): ${offerGrossMail.accVat.toFixed(2)}€`
+                    + (offerSplitMail.projektraumNet > 0 ? `
+Nettobetrag Projektraum: ${offerSplitMail.projektraumNet.toFixed(2)}€
+zzgl. 19% USt: ${offerGrossMail.projVat.toFixed(2)}€` : '')
+                    + `
+GESAMTPREIS (inkl. USt): ${offerGrossMail.gross.toFixed(2)}€
 
 ZAHLUNGSMODALITIES
 Kaution (nicht im Preis enthalten): ${prices.deposit}€
   → Wird nach Checkout zurückerstattet
-Anzahlung (${downPaymentPercent}% des Preises): ${Math.round(offer.total * (downPaymentPercent / 100))}€
+Anzahlung (${downPaymentPercent}% des Preises, inkl. USt): ${grossDownPaymentMail.toFixed(2)}€
   → Bei Buchungsbestätigung fällig
-Restbetrag: ${(safeNum(offer.total) - Math.round(safeNum(offer.total) * (downPaymentPercent / 100))).toFixed(2)}€
+Restbetrag (inkl. USt): ${grossRemainingMail.toFixed(2)}€
   → Zahlbar vor Anreise
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2056,15 +2165,15 @@ Deutschland`;
                     for (let i = basePersonsForWohnung; i < offer.persons; i++) {
                         const extraPersonIndex = i - basePersonsForWohnung;
                         const personPrice = getExtraPersonPrice(extraPersonIndex);
-                        items.push({ description: `Zusatzperson ${i + 1} (${nights} Nächte)`, quantity: nights, unitPrice: personPrice });
+                        items.push({ description: `Zusatzperson ${i + 1} (${nights} Nächte)`, quantity: nights, unitPrice: personPrice, vatRate: VAT_RATE_ACCOMMODATION });
                     }
                 }
-                if (offer.earlyCheckin) items.push({ description: 'Early Check-in', quantity: 1, unitPrice: prices.earlyCheckin });
-                if (offer.lateCheckout) items.push({ description: 'Late Checkout', quantity: 1, unitPrice: prices.lateCheckout });
-                if (offer.finalCleaning) items.push({ description: 'Endreinigung', quantity: 1, unitPrice: getFinalCleaning(offer.wohnung) });
-                if (offer.dogFee) items.push({ description: 'Hundegebühr (pro Hund × Nacht)', quantity: (offer.dogCount || 1) * nights, unitPrice: prices.dogFee });
-                if (offer.projektSpace) items.push({ description: 'Projektraum-Nutzung (pro Nacht)', quantity: nights, unitPrice: prices.projektSpace });
-                if (offer.projektSpaceCleaning) items.push({ description: 'Projektraum Endreinigung', quantity: 1, unitPrice: prices.projektSpaceCleaning });
+                if (offer.earlyCheckin) items.push({ description: 'Early Check-in', quantity: 1, unitPrice: prices.earlyCheckin, vatRate: VAT_RATE_ACCOMMODATION });
+                if (offer.lateCheckout) items.push({ description: 'Late Checkout', quantity: 1, unitPrice: prices.lateCheckout, vatRate: VAT_RATE_ACCOMMODATION });
+                if (offer.finalCleaning) items.push({ description: 'Endreinigung', quantity: 1, unitPrice: getFinalCleaning(offer.wohnung), vatRate: VAT_RATE_ACCOMMODATION });
+                if (offer.dogFee) items.push({ description: 'Hundegebühr (pro Hund × Nacht)', quantity: (offer.dogCount || 1) * nights, unitPrice: prices.dogFee, vatRate: VAT_RATE_ACCOMMODATION });
+                if (offer.projektSpace) items.push({ description: 'Projektraum-Nutzung (pro Nacht)', quantity: nights, unitPrice: prices.projektSpace, vatRate: VAT_RATE_STANDARD });
+                if (offer.projektSpaceCleaning) items.push({ description: 'Projektraum Endreinigung', quantity: 1, unitPrice: prices.projektSpaceCleaning, vatRate: VAT_RATE_STANDARD });
 
                 return items;
             };
@@ -2072,12 +2181,28 @@ Deutschland`;
             // Druckbare/PDF-fähige Briefkopf-Ansicht eines Angebots (HTML + Browser-Druck)
             const printOffer = (offer) => {
                 const items = getOfferItems(offer);
-                const subtotal = items.reduce((s, it) => s + it.quantity * it.unitPrice, 0);
                 const discount = Math.max(0, Math.min(100, parseFloat(offer.discountPercent) || 0));
-                const discountAmount = subtotal * (discount / 100);
-                const total = safeNum(offer.total);
-                const downPayment = Math.round(total * (downPaymentPercent / 100));
-                const remaining = total - downPayment;
+                // Netto/USt/Brutto werden aus denselben Positionen berechnet, die in der Tabelle
+                // gezeigt werden (je Position eigener Steuersatz: 7% Übernachtung/Nebenleistungen
+                // gem. § 12 Abs. 2 Nr. 11 UStG, 19% Projektraum) — damit stimmen Zeilensumme und
+                // Gesamtbetrag immer exakt überein.
+                const amounts = computeInvoiceAmounts(items, null, discount);
+                const subtotal = amounts.rawNet;
+                const discountAmount = amounts.discountAmount;
+                const total = amounts.net;
+                const vatAmount = amounts.vatAmount;
+                const grossTotal = amounts.gross;
+                const accGroup = amounts.vatBreakdown.find(g => g.rate === VAT_RATE_ACCOMMODATION) || { net: 0, vatAmount: 0 };
+                const projGroup = amounts.vatBreakdown.find(g => g.rate === VAT_RATE_STANDARD) || { net: 0, vatAmount: 0 };
+                // Anzahlung/Restbetrag je Steuersatz zuerst netto ermitteln (exakt wie später bei
+                // applyBookingLegToInvoice) und erst danach um die jeweilige USt ergänzen, damit
+                // dieser Betrag exakt zur später gestellten Rechnung passt.
+                const netAccDownPayment = Math.round(accGroup.net * (downPaymentPercent / 100));
+                const netProjDownPayment = Math.round(projGroup.net * (downPaymentPercent / 100));
+                const netAccRemaining = accGroup.net - netAccDownPayment;
+                const netProjRemaining = projGroup.net - netProjDownPayment;
+                const downPayment = netAccDownPayment * (1 + VAT_RATE_ACCOMMODATION) + netProjDownPayment * (1 + VAT_RATE_STANDARD);
+                const remaining = netAccRemaining * (1 + VAT_RATE_ACCOMMODATION) + netProjRemaining * (1 + VAT_RATE_STANDARD);
 
                 const itemsRows = items.map(it => `<tr><td>${it.description}</td><td style="text-align:center">${it.quantity}</td><td style="text-align:right">${it.unitPrice.toFixed(2)} €</td><td style="text-align:right">${(it.quantity * it.unitPrice).toFixed(2)} €</td></tr>`).join('');
                 const discountRow = discount > 0
@@ -2118,12 +2243,14 @@ Deutschland`;
                     + '<table><thead><tr><th>Beschreibung</th><th style="text-align:center">Menge</th><th style="text-align:right">Einzelpreis</th><th style="text-align:right">Gesamt</th></tr></thead><tbody>'
                     + itemsRows
                     + discountRow
-                    + '<tr class="total-row"><td colspan="3" style="text-align:right">Gesamtpreis</td><td style="text-align:right">' + total.toFixed(2) + ' €</td></tr>'
+                    + '<tr><td colspan="3" style="text-align:right;border-bottom:none">Nettobetrag</td><td style="text-align:right;border-bottom:none">' + total.toFixed(2) + ' €</td></tr>'
+                    + amounts.vatBreakdown.map(g => '<tr><td colspan="3" style="text-align:right;border-bottom:none">zzgl. ' + (g.rate * 100).toFixed(0) + '% USt' + (g.rate === VAT_RATE_ACCOMMODATION ? ' (§ 12 Abs. 2 Nr. 11 UStG)' : '') + '</td><td style="text-align:right;border-bottom:none">' + g.vatAmount.toFixed(2) + ' €</td></tr>').join('')
+                    + '<tr class="total-row"><td colspan="3" style="text-align:right">Gesamtpreis (inkl. USt)</td><td style="text-align:right">' + grossTotal.toFixed(2) + ' €</td></tr>'
                     + '</tbody></table>'
                     + '<p><strong>Zahlungsmodalitäten</strong><br>'
                     + 'Kaution (nicht im Preis enthalten): ' + prices.deposit + '€ — wird nach Checkout zurückerstattet<br>'
-                    + 'Anzahlung (' + downPaymentPercent + '% des Preises): ' + downPayment.toFixed(2) + '€ — bei Buchungsbestätigung fällig<br>'
-                    + 'Restbetrag: ' + remaining.toFixed(2) + '€ — zahlbar vor Anreise</p>'
+                    + 'Anzahlung (' + downPaymentPercent + '% des Preises, inkl. USt): ' + downPayment.toFixed(2) + '€ — bei Buchungsbestätigung fällig<br>'
+                    + 'Restbetrag (inkl. USt): ' + remaining.toFixed(2) + '€ — zahlbar vor Anreise</p>'
                     + '<p>Zur Bestätigung überweisen Sie bitte die Anzahlung auf folgendes Konto:</p>'
                     + '<p>Greenhouse Market GbR<br>'
                     + 'IBAN: ' + (companyInfo.iban || '[bitte in den Einstellungen eintragen]') + '<br>'
@@ -2247,26 +2374,52 @@ Deutschland`;
                 doc.line(marginLeft, y, pageWidth - marginRight, y);
                 y += 7;
 
-                const subtotal = items.reduce((s, it) => s + it.quantity * it.unitPrice, 0);
                 const discount = Math.max(0, Math.min(100, parseFloat(offer.discountPercent) || 0));
+                // Netto/USt/Brutto aus denselben Positionen wie oben abgedruckt (je Position
+                // eigener Steuersatz: 7% Übernachtung/Nebenleistungen gem. § 12 Abs. 2 Nr. 11 UStG,
+                // 19% Projektraum) — damit stimmen Zeilensumme und Gesamtbetrag exakt überein.
+                const amounts = computeInvoiceAmounts(items, null, discount);
+                const subtotal = amounts.rawNet;
                 if (discount > 0) {
                     doc.text('Zwischensumme', colPrice, y, { align: 'right' });
                     doc.text(subtotal.toFixed(2) + ' €', colTotal, y, { align: 'right' });
                     y += 6;
                     doc.text(`Rabatt (${discount}%)`, colPrice, y, { align: 'right' });
-                    doc.text('-' + (subtotal * discount / 100).toFixed(2) + ' €', colTotal, y, { align: 'right' });
+                    doc.text('-' + amounts.discountAmount.toFixed(2) + ' €', colTotal, y, { align: 'right' });
                     y += 6;
                 }
 
+                const total = amounts.net;
+                const grossTotal = amounts.gross;
+                const accGroup = amounts.vatBreakdown.find(g => g.rate === VAT_RATE_ACCOMMODATION) || { net: 0, vatAmount: 0 };
+                const projGroup = amounts.vatBreakdown.find(g => g.rate === VAT_RATE_STANDARD) || { net: 0, vatAmount: 0 };
+
+                doc.setFont('helvetica', 'normal');
+                doc.setFontSize(10);
+                doc.text('Nettobetrag', colPrice, y, { align: 'right' });
+                doc.text(total.toFixed(2) + ' €', colTotal, y, { align: 'right' });
+                y += 6;
+                amounts.vatBreakdown.forEach(g => {
+                    doc.text(`zzgl. ${(g.rate * 100).toFixed(0)}% USt` + (g.rate === VAT_RATE_ACCOMMODATION ? ' (§12 Abs.2 Nr.11 UStG)' : ''), colPrice, y, { align: 'right' });
+                    doc.text(g.vatAmount.toFixed(2) + ' €', colTotal, y, { align: 'right' });
+                    y += 6;
+                });
+
                 doc.setFont('helvetica', 'bold');
                 doc.setFontSize(12);
-                doc.text('Gesamtpreis', colPrice, y, { align: 'right' });
-                doc.text(safeNum(offer.total).toFixed(2) + ' €', colTotal, y, { align: 'right' });
+                doc.text('Gesamtpreis (inkl. USt)', colPrice, y, { align: 'right' });
+                doc.text(grossTotal.toFixed(2) + ' €', colTotal, y, { align: 'right' });
                 y += 12;
 
-                const total = safeNum(offer.total);
-                const downPayment = Math.round(total * (downPaymentPercent / 100));
-                const remaining = total - downPayment;
+                // Anzahlung/Restbetrag je Steuersatz zuerst netto ermitteln (exakt wie später bei
+                // applyBookingLegToInvoice) und erst danach um die jeweilige USt ergänzen, damit
+                // dieser Betrag exakt zur später gestellten Rechnung passt.
+                const netAccDownPayment = Math.round(accGroup.net * (downPaymentPercent / 100));
+                const netProjDownPayment = Math.round(projGroup.net * (downPaymentPercent / 100));
+                const netAccRemaining = accGroup.net - netAccDownPayment;
+                const netProjRemaining = projGroup.net - netProjDownPayment;
+                const downPayment = netAccDownPayment * (1 + VAT_RATE_ACCOMMODATION) + netProjDownPayment * (1 + VAT_RATE_STANDARD);
+                const remaining = netAccRemaining * (1 + VAT_RATE_ACCOMMODATION) + netProjRemaining * (1 + VAT_RATE_STANDARD);
 
                 doc.setFont('helvetica', 'normal');
                 doc.setFontSize(9);
@@ -2277,9 +2430,9 @@ Deutschland`;
                 doc.setFont('helvetica', 'normal');
                 doc.text(`Kaution (nicht im Preis enthalten): ${prices.deposit}€ — wird nach Checkout zurückerstattet`, marginLeft, y, { maxWidth: contentWidth });
                 y += 5;
-                doc.text(`Anzahlung (${downPaymentPercent}%): ${downPayment.toFixed(2)}€ — bei Buchungsbestätigung fällig`, marginLeft, y, { maxWidth: contentWidth });
+                doc.text(`Anzahlung (${downPaymentPercent}%, inkl. USt): ${downPayment.toFixed(2)}€ — bei Buchungsbestätigung fällig`, marginLeft, y, { maxWidth: contentWidth });
                 y += 5;
-                doc.text(`Restbetrag: ${remaining.toFixed(2)}€ — zahlbar vor Anreise`, marginLeft, y, { maxWidth: contentWidth });
+                doc.text(`Restbetrag (inkl. USt): ${remaining.toFixed(2)}€ — zahlbar vor Anreise`, marginLeft, y, { maxWidth: contentWidth });
                 y += 10;
 
                 ensureSpace(36);
@@ -2649,21 +2802,45 @@ Deutschland`;
                 });
             };
 
+            // Gruppiert die Positionen nach ihrem jeweils eigenen Steuersatz (it.vatRate — 7% für
+            // Übernachtung u. direkte Nebenleistungen gem. § 12 Abs. 2 Nr. 11 UStG, 19% für
+            // Projektraum u. sonstige Leistungen) und liefert sowohl die Gesamtsummen als auch die
+            // Aufschlüsselung je Satz (vatBreakdown) — nötig, weil eine Rechnung jetzt Positionen
+            // mit unterschiedlichen Sätzen enthalten kann. 'vatMode' bleibt nur als Fallback für
+            // ältere Positionen ohne eigenes vatRate-Feld (Alt-Rechnungen von vor dieser Änderung,
+            // inkl. der damals noch möglichen 'kleinunternehmer'-Rechnungen ohne USt).
             const calcInvoiceNet = (items) => items.reduce((sum, it) => sum + (parseFloat(it.quantity) || 0) * (parseFloat(it.unitPrice) || 0), 0);
 
             const computeInvoiceAmounts = (items, vatMode, discountPercent) => {
                 const rawNet = calcInvoiceNet(items);
                 const discount = Math.max(0, Math.min(100, parseFloat(discountPercent) || 0));
+                const discountFactor = 1 - discount / 100;
                 const discountAmount = rawNet * (discount / 100);
-                const net = rawNet - discountAmount;
-                const vatRate = vatMode === '19' ? 0.19 : vatMode === '7' ? 0.07 : 0;
-                const vatAmount = net * vatRate;
+                const net = rawNet * discountFactor;
+
+                const legacyRate = vatMode === '19' ? VAT_RATE_STANDARD : vatMode === '7' ? VAT_RATE_ACCOMMODATION : 0;
+                const netByRate = {};
+                items.forEach(it => {
+                    const rate = (typeof it.vatRate === 'number') ? it.vatRate : legacyRate;
+                    const lineNet = (parseFloat(it.quantity) || 0) * (parseFloat(it.unitPrice) || 0) * discountFactor;
+                    netByRate[rate] = (netByRate[rate] || 0) + lineNet;
+                });
+                const vatBreakdown = Object.keys(netByRate)
+                    .map(k => parseFloat(k))
+                    .sort((a, b) => b - a)
+                    .map(rate => ({ rate, net: netByRate[rate], vatAmount: netByRate[rate] * rate }));
+                const vatAmount = vatBreakdown.reduce((s, g) => s + g.vatAmount, 0);
                 const gross = net + vatAmount;
-                return { rawNet, discount, discountAmount, net, vatRate, vatAmount, gross };
+                // vatRate: bei einheitlichem Satz der tatsächliche Satz, bei gemischten Sätzen
+                // (z. B. Übernachtung 7% + Projektraum 19% auf derselben Rechnung) der
+                // effektive/gewichtete Satz — für Anzeigen, die nur EINEN Prozentsatz erwarten.
+                // Für die korrekte Aufschlüsselung immer vatBreakdown verwenden.
+                const vatRate = vatBreakdown.length === 1 ? vatBreakdown[0].rate : (net > 0 ? vatAmount / net : 0);
+                return { rawNet, discount, discountAmount, net, vatRate, vatAmount, gross, vatBreakdown };
             };
 
             const addInvoiceItem = () => {
-                setInvoiceForm({ ...invoiceForm, items: [...invoiceForm.items, { description: '', quantity: 1, unitPrice: 0 }] });
+                setInvoiceForm({ ...invoiceForm, items: [...invoiceForm.items, { description: '', quantity: 1, unitPrice: 0, vatRate: VAT_RATE_STANDARD }] });
             };
 
             const removeInvoiceItem = (idx) => {
@@ -2678,11 +2855,11 @@ Deutschland`;
             // Zusatzleistungen als An-/Abwählbare Checkboxen (statt Freitext-Position)
             const isInvoiceServiceActive = (key) => invoiceForm.items.some(it => it.key === key);
 
-            const toggleInvoiceService = (key, description, unitPrice, quantity = 1) => {
+            const toggleInvoiceService = (key, description, unitPrice, quantity = 1, vatRate = VAT_RATE_STANDARD) => {
                 if (isInvoiceServiceActive(key)) {
                     setInvoiceForm({ ...invoiceForm, items: invoiceForm.items.filter(it => it.key !== key) });
                 } else {
-                    setInvoiceForm({ ...invoiceForm, items: [...invoiceForm.items, { key, description, quantity, unitPrice }] });
+                    setInvoiceForm({ ...invoiceForm, items: [...invoiceForm.items, { key, description, quantity, unitPrice, vatRate }] });
                 }
             };
 
@@ -2883,17 +3060,17 @@ Deutschland`;
                     for (let i = basePersonsForWohnung; i < persons; i++) {
                         const extraPersonIndex = i - basePersonsForWohnung;
                         const personPrice = getExtraPersonPrice(extraPersonIndex);
-                        items.push({ key: 'person-' + i, description: `Zusatzperson ${i + 1} (${nights} Nächte)`, quantity: nights, unitPrice: personPrice });
+                        items.push({ key: 'person-' + i, description: `Zusatzperson ${i + 1} (${nights} Nächte)`, quantity: nights, unitPrice: personPrice, vatRate: VAT_RATE_ACCOMMODATION });
                     }
                 }
 
-                if (params.earlyCheckin) items.push({ key: 'earlyCheckin', description: 'Early Check-in', quantity: 1, unitPrice: prices.earlyCheckin });
-                if (params.lateCheckout) items.push({ key: 'lateCheckout', description: 'Late Checkout', quantity: 1, unitPrice: prices.lateCheckout });
-                if (params.finalCleaning) items.push({ key: 'finalCleaning', description: 'Endreinigung', quantity: 1, unitPrice: getFinalCleaning(wohnung) });
-                if (params.dogFee) items.push({ key: 'dogFee', description: 'Hundegebühr (pro Hund × Nacht)', quantity: (parseInt(params.dogCount) || 1) * nights, unitPrice: prices.dogFee });
+                if (params.earlyCheckin) items.push({ key: 'earlyCheckin', description: 'Early Check-in', quantity: 1, unitPrice: prices.earlyCheckin, vatRate: VAT_RATE_ACCOMMODATION });
+                if (params.lateCheckout) items.push({ key: 'lateCheckout', description: 'Late Checkout', quantity: 1, unitPrice: prices.lateCheckout, vatRate: VAT_RATE_ACCOMMODATION });
+                if (params.finalCleaning) items.push({ key: 'finalCleaning', description: 'Endreinigung', quantity: 1, unitPrice: getFinalCleaning(wohnung), vatRate: VAT_RATE_ACCOMMODATION });
+                if (params.dogFee) items.push({ key: 'dogFee', description: 'Hundegebühr (pro Hund × Nacht)', quantity: (parseInt(params.dogCount) || 1) * nights, unitPrice: prices.dogFee, vatRate: VAT_RATE_ACCOMMODATION });
                 if (params.projektSpace) {
-                    items.push({ key: 'projektSpace', description: 'Projektraum-Nutzung (pro Nacht)', quantity: nights, unitPrice: prices.projektSpace });
-                    items.push({ key: 'projektSpaceCleaning', description: 'Projektraum Reinigung', quantity: 1, unitPrice: prices.projektSpaceCleaning });
+                    items.push({ key: 'projektSpace', description: 'Projektraum-Nutzung (pro Nacht)', quantity: nights, unitPrice: prices.projektSpace, vatRate: VAT_RATE_STANDARD });
+                    items.push({ key: 'projektSpaceCleaning', description: 'Projektraum Reinigung', quantity: 1, unitPrice: prices.projektSpaceCleaning, vatRate: VAT_RATE_STANDARD });
                 }
 
                 return items;
@@ -2909,9 +3086,33 @@ Deutschland`;
                 if (!booking) return;
                 const isDownpayment = leg === 'downpayment';
                 const amount = isDownpayment ? safeNum(booking.downPayment) : safeNum(booking.remaining);
-                const description = isDownpayment
+                const descriptionBase = isDownpayment
                     ? `Anzahlung für Aufenthalt ${booking.checkIn} bis ${booking.checkOut}`
                     : `Restzahlung für Aufenthalt ${booking.checkIn} bis ${booking.checkOut}`;
+
+                // Der Anzahlungs-/Restbetrag deckt ggf. sowohl Übernachtung/Nebenleistungen (7%,
+                // § 12 Abs. 2 Nr. 11 UStG) als auch Projektraum (19%) ab. Da hierfür nur ein
+                // Gesamtbetrag hinterlegt ist (kein Einzelposten je Leistung), wird er anhand der
+                // aktuellen Buchungsparameter im selben Verhältnis aufgeteilt wie beim
+                // ursprünglichen Angebot — die Summe beider Teilbeträge bleibt exakt gleich amount.
+                const split = splitNetByRatio(booking, amount);
+                const items = [];
+                if (split.accommodationNet > 0 || split.projektraumNet <= 0) {
+                    items.push({
+                        description: split.projektraumNet > 0 ? `${descriptionBase} – Übernachtung u. Nebenleistungen` : descriptionBase,
+                        quantity: 1,
+                        unitPrice: split.accommodationNet,
+                        vatRate: VAT_RATE_ACCOMMODATION,
+                    });
+                }
+                if (split.projektraumNet > 0) {
+                    items.push({
+                        description: `${descriptionBase} – Projektraum`,
+                        quantity: 1,
+                        unitPrice: split.projektraumNet,
+                        vatRate: VAT_RATE_STANDARD,
+                    });
+                }
 
                 setInvoiceForm({
                     ...emptyInvoiceForm,
@@ -2922,7 +3123,7 @@ Deutschland`;
                     guestAddress: booking.guest.address || '',
                     serviceStart: booking.checkIn,
                     serviceEnd: booking.checkOut,
-                    items: [{ description, quantity: 1, unitPrice: amount }],
+                    items,
                 });
                 setActiveTab('invoices');
                 setShowInvoiceForm(true);
@@ -3162,7 +3363,13 @@ LEISTUNGEN
                 if (invoice.vatMode === 'kleinunternehmer') {
                     content += `Gemäß § 19 UStG wird keine Umsatzsteuer berechnet.\n`;
                 } else {
-                    content += `zzgl. ${(invoice.vatRate * 100).toFixed(0)}% USt: ${invoice.vatAmount.toFixed(2)}€\n`;
+                    // Positionen können unterschiedliche Steuersätze haben (7% Übernachtung u.
+                    // Nebenleistungen gem. § 12 Abs. 2 Nr. 11 UStG, 19% Projektraum/sonstige
+                    // Leistungen) — Aufschlüsselung daher je Satz aus den Positionen neu ermittelt.
+                    const invAmounts = computeInvoiceAmounts(invoice.items, invoice.vatMode, invoice.discount);
+                    invAmounts.vatBreakdown.forEach(g => {
+                        content += `zzgl. ${(g.rate * 100).toFixed(0)}% USt${g.rate === VAT_RATE_ACCOMMODATION ? ' (§ 12 Abs. 2 Nr. 11 UStG)' : ''}: ${g.vatAmount.toFixed(2)}€\n`;
+                    });
                 }
                 content += `GESAMTBETRAG: ${invoice.gross.toFixed(2)}€
 
@@ -3206,9 +3413,13 @@ Deutschland
                     return `<tr><td>${it.description}</td><td style="text-align:center">${qty}</td><td style="text-align:right">${price.toFixed(2)} €</td><td style="text-align:right">${(qty * price).toFixed(2)} €</td></tr>`;
                 }).join('');
 
+                // Positionen können unterschiedliche Steuersätze haben (7% Übernachtung u.
+                // Nebenleistungen gem. § 12 Abs. 2 Nr. 11 UStG, 19% Projektraum/sonstige
+                // Leistungen) — Aufschlüsselung daher je Satz aus den Positionen neu ermittelt.
+                const invAmountsHtml = computeInvoiceAmounts(invoice.items, invoice.vatMode, invoice.discount);
                 const vatRow = invoice.vatMode === 'kleinunternehmer'
                     ? `<tr><td colspan="3" style="text-align:right;padding-top:8px;font-size:12px;color:#666;border-bottom:none">Gemäß § 19 UStG wird keine Umsatzsteuer ausgewiesen.</td><td style="border-bottom:none"></td></tr>`
-                    : `<tr><td colspan="3" style="text-align:right;border-bottom:none">zzgl. ${(invoice.vatRate * 100).toFixed(0)}% USt</td><td style="text-align:right;border-bottom:none">${invoice.vatAmount.toFixed(2)} €</td></tr>`;
+                    : invAmountsHtml.vatBreakdown.map(g => `<tr><td colspan="3" style="text-align:right;border-bottom:none">zzgl. ${(g.rate * 100).toFixed(0)}% USt${g.rate === VAT_RATE_ACCOMMODATION ? ' (§12 Abs.2 Nr.11 UStG)' : ''}</td><td style="text-align:right;border-bottom:none">${g.vatAmount.toFixed(2)} €</td></tr>`).join('');
 
                 const addressHtml = invoice.guestAddress ? invoice.guestAddress.split('\n').join('<br>') + '<br>' : '';
                 const notesHtml = invoice.notes ? invoice.notes.split('\n').join('<br>') : '';
@@ -3407,11 +3618,19 @@ Deutschland
                     doc.setFontSize(8);
                     doc.text('Gemäß § 19 UStG wird keine Umsatzsteuer ausgewiesen.', colTotal, y, { align: 'right' });
                     doc.setFontSize(9);
+                    y += 8;
                 } else {
-                    doc.text(`zzgl. ${(invoice.vatRate * 100).toFixed(0)}% USt`, colPrice, y, { align: 'right' });
-                    doc.text(invoice.vatAmount.toFixed(2) + ' €', colTotal, y, { align: 'right' });
+                    // Positionen können unterschiedliche Steuersätze haben (7% Übernachtung u.
+                    // Nebenleistungen gem. § 12 Abs. 2 Nr. 11 UStG, 19% Projektraum/sonstige
+                    // Leistungen) — Aufschlüsselung daher je Satz aus den Positionen neu ermittelt.
+                    const invAmountsPdf = computeInvoiceAmounts(invoice.items, invoice.vatMode, invoice.discount);
+                    invAmountsPdf.vatBreakdown.forEach(g => {
+                        doc.text(`zzgl. ${(g.rate * 100).toFixed(0)}% USt${g.rate === VAT_RATE_ACCOMMODATION ? ' (§12 Abs.2 Nr.11 UStG)' : ''}`, colPrice, y, { align: 'right' });
+                        doc.text(g.vatAmount.toFixed(2) + ' €', colTotal, y, { align: 'right' });
+                        y += 6;
+                    });
+                    y += 2;
                 }
-                y += 8;
 
                 doc.setFont('helvetica', 'bold');
                 doc.setFontSize(12);
@@ -3929,7 +4148,15 @@ Deutschland
                                             <div className="item-meta">{inquiry.email} • {inquiry.phone || 'kein Telefon'} • {inquiry.created}</div>
                                         </div>
                                         <div style={{ textAlign: 'right' }}>
-                                            <div style={{ fontSize: '18px', fontWeight: '600', color: 'var(--accent)', marginBottom: '4px' }}>{safeNum(inquiry.total).toFixed(2)}€</div>
+                                            {(() => {
+                                                const g = grossFromNetSplit(splitNetByRatio(inquiry, inquiry.total));
+                                                return (
+                                                    <React.Fragment>
+                                                        <div style={{ fontSize: '18px', fontWeight: '600', color: 'var(--accent)', marginBottom: '4px' }}>{g.gross.toFixed(2)}€</div>
+                                                        <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginBottom: '4px' }}>{safeNum(inquiry.total).toFixed(2)}€ netto (7%/19% USt)</div>
+                                                    </React.Fragment>
+                                                );
+                                            })()}
                                             <div className={inquiry.status === 'accepted' ? 'status-paid' : 'status-pending'}>
                                                 {inquiry.status === 'new' ? '🆕 Neu' : inquiry.status === 'accepted' ? '✓ Angebot erstellt' : '✕ Abgelehnt'}
                                             </div>
@@ -4241,9 +4468,25 @@ Deutschland
                                                 </React.Fragment>
                                             );
                                         })()}
-                                        <div className="offer-total">
-                                            Gesamtpreis: {total.toFixed(2)}€
-                                        </div>
+                                        {(() => {
+                                            const split = calculateNetSplit(offerForm);
+                                            const g = grossFromNetSplit(split);
+                                            return (
+                                                <React.Fragment>
+                                                    <div className="offer-row"><span>Nettobetrag Übernachtung u. Nebenleistungen:</span><span>{split.accommodationNet.toFixed(2)}€</span></div>
+                                                    <div className="offer-row"><span>zzgl. 7% USt:</span><span>{g.accVat.toFixed(2)}€</span></div>
+                                                    {split.projektraumNet > 0 && (
+                                                        <React.Fragment>
+                                                            <div className="offer-row"><span>Nettobetrag Projektraum:</span><span>{split.projektraumNet.toFixed(2)}€</span></div>
+                                                            <div className="offer-row"><span>zzgl. 19% USt:</span><span>{g.projVat.toFixed(2)}€</span></div>
+                                                        </React.Fragment>
+                                                    )}
+                                                    <div className="offer-total">
+                                                        Gesamtpreis (inkl. USt): {g.gross.toFixed(2)}€
+                                                    </div>
+                                                </React.Fragment>
+                                            );
+                                        })()}
                                     </div>
 
                                     {offerForm.checkIn && offerForm.checkOut && hasBookedDateInRange(offerForm.checkIn, offerForm.checkOut, offerForm.wohnung, editingOfferId) && (
@@ -4305,7 +4548,15 @@ Deutschland
                                                 <div className="item-meta">{offer.guest.name} • {offer.created}</div>
                                             </div>
                                             <div style={{ textAlign: 'right' }}>
-                                                <div style={{ fontSize: '18px', fontWeight: '600', color: 'var(--accent)', marginBottom: '4px' }}>{safeNum(offer.total).toFixed(2)}€</div>
+                                                {(() => {
+                                                    const g = grossFromNetSplit(splitNetByRatio(offer, offer.total));
+                                                    return (
+                                                        <React.Fragment>
+                                                            <div style={{ fontSize: '18px', fontWeight: '600', color: 'var(--accent)', marginBottom: '4px' }}>{g.gross.toFixed(2)}€</div>
+                                                            <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginBottom: '4px' }}>{safeNum(offer.total).toFixed(2)}€ netto (7%/19% USt)</div>
+                                                        </React.Fragment>
+                                                    );
+                                                })()}
                                                 <div className={offer.status === 'sent' ? 'status-pending' : 'status-paid'}>
                                                     {offer.status === 'sent' ? '📧 Versendet' : '✓ Gebucht'}
                                                 </div>
@@ -4340,7 +4591,15 @@ Deutschland
                                             <div className="item-meta">{booking.guest.name} • {booking.created}</div>
                                         </div>
                                         <div style={{ textAlign: 'right' }}>
-                                            <div style={{ fontSize: '18px', fontFamily: 'var(--font-serif)', fontWeight: '600', color: 'var(--accent)' }}>{safeNum(booking.total).toFixed(2)}€</div>
+                                            {(() => {
+                                                const g = grossFromNetSplit(splitNetByRatio(booking, booking.total));
+                                                return (
+                                                    <React.Fragment>
+                                                        <div style={{ fontSize: '18px', fontFamily: 'var(--font-serif)', fontWeight: '600', color: 'var(--accent)' }}>{g.gross.toFixed(2)}€</div>
+                                                        <div style={{ fontSize: '11px', color: 'var(--licht-70)' }}>{safeNum(booking.total).toFixed(2)}€ netto (7%/19% USt)</div>
+                                                    </React.Fragment>
+                                                );
+                                            })()}
                                         </div>
                                     </div>
                                     <div className="item-meta">{booking.wohnung === 'wohnung1' ? 'Wohnung I' : 'Wohnung II'} • {booking.checkIn} bis {booking.checkOut}</div>
@@ -4367,7 +4626,15 @@ Deutschland
                                                 <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>Bei Buchungsbestätigung fällig</div>
                                             </div>
                                             <div>
-                                                <div className="payment-amount">{booking.downPayment}€</div>
+                                                {(() => {
+                                                    const g = grossFromNetSplit(splitNetByRatio(booking, booking.downPayment));
+                                                    return (
+                                                        <React.Fragment>
+                                                            <div className="payment-amount">{g.gross.toFixed(2)}€</div>
+                                                            <div style={{ fontSize: '11px', color: 'var(--licht-70)' }}>{safeNum(booking.downPayment).toFixed(2)}€ netto (7%/19% USt)</div>
+                                                        </React.Fragment>
+                                                    );
+                                                })()}
                                                 <div className={booking.downPaymentPaid ? 'payment-status' : 'payment-pending'}>
                                                     {booking.downPaymentPaid ? '✓ Bezahlt' : '⏳ Ausstehend'}
                                                 </div>
@@ -4380,7 +4647,15 @@ Deutschland
                                                 <div style={{ fontSize: '12px', color: 'var(--licht-70)' }}>Zahlbar vor Anreise</div>
                                             </div>
                                             <div>
-                                                <div className="payment-amount">{safeNum(booking.remaining).toFixed(2)}€</div>
+                                                {(() => {
+                                                    const g = grossFromNetSplit(splitNetByRatio(booking, booking.remaining));
+                                                    return (
+                                                        <React.Fragment>
+                                                            <div className="payment-amount">{g.gross.toFixed(2)}€</div>
+                                                            <div style={{ fontSize: '11px', color: 'var(--licht-70)' }}>{safeNum(booking.remaining).toFixed(2)}€ netto (7%/19% USt)</div>
+                                                        </React.Fragment>
+                                                    );
+                                                })()}
                                                 <div className={booking.remainingPaid ? 'payment-status' : 'payment-pending'}>
                                                     {booking.remainingPaid ? '✓ Bezahlt' : '⏳ Ausstehend'}
                                                 </div>
@@ -4736,7 +5011,7 @@ Deutschland
 
                                     <h4 style={{ marginTop: '20px', marginBottom: '12px' }}>Positionen</h4>
                                     {invoiceForm.items.map((it, idx) => (
-                                        <div key={idx} style={{ display: 'grid', gridTemplateColumns: '3fr 1fr 1fr auto', gap: '8px', marginBottom: '8px', alignItems: 'end' }}>
+                                        <div key={idx} style={{ display: 'grid', gridTemplateColumns: '3fr 1fr 1fr 1fr auto', gap: '8px', marginBottom: '8px', alignItems: 'end' }}>
                                             <div className="form-group" style={{ margin: 0 }}>
                                                 <label>Beschreibung</label>
                                                 <input type="text" value={it.description} onChange={(e) => updateInvoiceItem(idx, 'description', e.target.value)} placeholder="z. B. Unterkunft Wohnung I (3 Nächte)" />
@@ -4749,6 +5024,17 @@ Deutschland
                                                 <label>Einzelpreis (€)</label>
                                                 <input type="number" min="0" step="0.01" value={it.unitPrice} onChange={(e) => updateInvoiceItem(idx, 'unitPrice', parseFloat(e.target.value) || 0)} />
                                             </div>
+                                            <div className="form-group" style={{ margin: 0 }}>
+                                                <label>USt</label>
+                                                <select
+                                                    value={typeof it.vatRate === 'number' ? it.vatRate : VAT_RATE_STANDARD}
+                                                    onChange={(e) => updateInvoiceItem(idx, 'vatRate', parseFloat(e.target.value))}
+                                                    title="Übernachtung u. direkte Nebenleistungen = 7% (§ 12 Abs. 2 Nr. 11 UStG), Projektraum u. sonstige Leistungen = 19%"
+                                                >
+                                                    <option value={VAT_RATE_ACCOMMODATION}>7%</option>
+                                                    <option value={VAT_RATE_STANDARD}>19%</option>
+                                                </select>
+                                            </div>
                                             <button type="button" className="danger" onClick={() => removeInvoiceItem(idx)} disabled={invoiceForm.items.length === 1}>✕</button>
                                         </div>
                                     ))}
@@ -4756,28 +5042,28 @@ Deutschland
 
                                     <h4 style={{ marginTop: '20px', marginBottom: '12px' }}>Zusatzleistungen</h4>
                                     <div className="checkbox-group">
-                                        <input type="checkbox" id="inv-earlyCheckin" checked={isInvoiceServiceActive('earlyCheckin')} onChange={() => toggleInvoiceService('earlyCheckin', 'Early Check-in', prices.earlyCheckin)} />
-                                        <label htmlFor="inv-earlyCheckin" style={{ margin: 0 }}>Early Check-in (+{prices.earlyCheckin}€)</label>
+                                        <input type="checkbox" id="inv-earlyCheckin" checked={isInvoiceServiceActive('earlyCheckin')} onChange={() => toggleInvoiceService('earlyCheckin', 'Early Check-in', prices.earlyCheckin, 1, VAT_RATE_ACCOMMODATION)} />
+                                        <label htmlFor="inv-earlyCheckin" style={{ margin: 0 }}>Early Check-in (+{prices.earlyCheckin}€, 7% USt)</label>
                                     </div>
                                     <div className="checkbox-group">
-                                        <input type="checkbox" id="inv-lateCheckout" checked={isInvoiceServiceActive('lateCheckout')} onChange={() => toggleInvoiceService('lateCheckout', 'Late Checkout', prices.lateCheckout)} />
-                                        <label htmlFor="inv-lateCheckout" style={{ margin: 0 }}>Late Checkout (+{prices.lateCheckout}€)</label>
+                                        <input type="checkbox" id="inv-lateCheckout" checked={isInvoiceServiceActive('lateCheckout')} onChange={() => toggleInvoiceService('lateCheckout', 'Late Checkout', prices.lateCheckout, 1, VAT_RATE_ACCOMMODATION)} />
+                                        <label htmlFor="inv-lateCheckout" style={{ margin: 0 }}>Late Checkout (+{prices.lateCheckout}€, 7% USt)</label>
                                     </div>
                                     <div className="checkbox-group">
-                                        <input type="checkbox" id="inv-finalCleaning" checked={isInvoiceServiceActive('finalCleaning')} onChange={() => toggleInvoiceService('finalCleaning', 'Endreinigung', getFinalCleaning(invoiceForm.wohnung))} />
-                                        <label htmlFor="inv-finalCleaning" style={{ margin: 0 }}>Endreinigung (+{getFinalCleaning(invoiceForm.wohnung)}€)</label>
+                                        <input type="checkbox" id="inv-finalCleaning" checked={isInvoiceServiceActive('finalCleaning')} onChange={() => toggleInvoiceService('finalCleaning', 'Endreinigung', getFinalCleaning(invoiceForm.wohnung), 1, VAT_RATE_ACCOMMODATION)} />
+                                        <label htmlFor="inv-finalCleaning" style={{ margin: 0 }}>Endreinigung (+{getFinalCleaning(invoiceForm.wohnung)}€, 7% USt)</label>
                                     </div>
                                     <div className="checkbox-group">
-                                        <input type="checkbox" id="inv-dogFee" checked={isInvoiceServiceActive('dogFee')} onChange={() => toggleInvoiceService('dogFee', 'Hundegebühr (pro Hund × Nacht)', prices.dogFee, invoiceNightsCount())} />
-                                        <label htmlFor="inv-dogFee" style={{ margin: 0 }}>Hundegebühr (+{prices.dogFee}€/Hund/Nacht — Menge danach bei Bedarf anpassen)</label>
+                                        <input type="checkbox" id="inv-dogFee" checked={isInvoiceServiceActive('dogFee')} onChange={() => toggleInvoiceService('dogFee', 'Hundegebühr (pro Hund × Nacht)', prices.dogFee, invoiceNightsCount(), VAT_RATE_ACCOMMODATION)} />
+                                        <label htmlFor="inv-dogFee" style={{ margin: 0 }}>Hundegebühr (+{prices.dogFee}€/Hund/Nacht, 7% USt — Menge danach bei Bedarf anpassen)</label>
                                     </div>
                                     <div className="checkbox-group">
-                                        <input type="checkbox" id="inv-projektSpace" checked={isInvoiceServiceActive('projektSpace')} onChange={() => toggleInvoiceService('projektSpace', 'Projektraum-Nutzung (pro Nacht)', prices.projektSpace, invoiceNightsCount())} />
-                                        <label htmlFor="inv-projektSpace" style={{ margin: 0 }}>Projektraum (+{prices.projektSpace}€/Nacht — Menge danach bei Bedarf anpassen)</label>
+                                        <input type="checkbox" id="inv-projektSpace" checked={isInvoiceServiceActive('projektSpace')} onChange={() => toggleInvoiceService('projektSpace', 'Projektraum-Nutzung (pro Nacht)', prices.projektSpace, invoiceNightsCount(), VAT_RATE_STANDARD)} />
+                                        <label htmlFor="inv-projektSpace" style={{ margin: 0 }}>Projektraum (+{prices.projektSpace}€/Nacht, 19% USt — Menge danach bei Bedarf anpassen)</label>
                                     </div>
                                     <div className="checkbox-group">
-                                        <input type="checkbox" id="inv-projektSpaceCleaning" checked={isInvoiceServiceActive('projektSpaceCleaning')} onChange={() => toggleInvoiceService('projektSpaceCleaning', 'Projektraum Reinigung', prices.projektSpaceCleaning)} />
-                                        <label htmlFor="inv-projektSpaceCleaning" style={{ margin: 0 }}>Projektraum Reinigung (+{prices.projektSpaceCleaning}€)</label>
+                                        <input type="checkbox" id="inv-projektSpaceCleaning" checked={isInvoiceServiceActive('projektSpaceCleaning')} onChange={() => toggleInvoiceService('projektSpaceCleaning', 'Projektraum Reinigung', prices.projektSpaceCleaning, 1, VAT_RATE_STANDARD)} />
+                                        <label htmlFor="inv-projektSpaceCleaning" style={{ margin: 0 }}>Projektraum Reinigung (+{prices.projektSpaceCleaning}€, 19% USt)</label>
                                     </div>
 
                                     {(prices.extraServices || []).length > 0 && (
@@ -4785,20 +5071,15 @@ Deutschland
                                             <h4 style={{ marginTop: '16px', marginBottom: '12px' }}>Weitere Leistungen</h4>
                                             {prices.extraServices.map(service => (
                                                 <div className="checkbox-group" key={service.id}>
-                                                    <input type="checkbox" id={'inv-svc-' + service.id} checked={isInvoiceServiceActive('svc-' + service.id)} onChange={() => toggleInvoiceService('svc-' + service.id, service.name || 'Zusatzleistung', service.price)} />
-                                                    <label htmlFor={'inv-svc-' + service.id} style={{ margin: 0 }}>{service.name || 'Zusatzleistung'} (+{service.price}€)</label>
+                                                    <input type="checkbox" id={'inv-svc-' + service.id} checked={isInvoiceServiceActive('svc-' + service.id)} onChange={() => toggleInvoiceService('svc-' + service.id, service.name || 'Zusatzleistung', service.price, 1, VAT_RATE_STANDARD)} />
+                                                    <label htmlFor={'inv-svc-' + service.id} style={{ margin: 0 }}>{service.name || 'Zusatzleistung'} (+{service.price}€, 19% USt)</label>
                                                 </div>
                                             ))}
                                         </React.Fragment>
                                     )}
 
-                                    <div className="form-group">
-                                        <label>Umsatzsteuer</label>
-                                        <select value={invoiceForm.vatMode} onChange={(e) => setInvoiceForm({ ...invoiceForm, vatMode: e.target.value })}>
-                                            <option value="kleinunternehmer">Keine USt (§ 19 UStG Kleinunternehmerregelung)</option>
-                                            <option value="7">7% USt (ermäßigt, Beherbergung)</option>
-                                            <option value="19">19% USt (regulär)</option>
-                                        </select>
+                                    <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginBottom: '16px' }}>
+                                        Der Steuersatz wird jetzt pro Position festgelegt (Spalte „USt" oben): 7% für Übernachtung u. direkte Nebenleistungen (§ 12 Abs. 2 Nr. 11 UStG), 19% für Projektraum u. sonstige Leistungen.
                                     </div>
 
                                     <div className="form-group">
@@ -4824,9 +5105,9 @@ Deutschland
                                                         <div className="offer-row"><span>Rabatt ({amounts.discount}%):</span><span>-{amounts.discountAmount.toFixed(2)}€</span></div>
                                                     )}
                                                     <div className="offer-row"><span>Nettobetrag:</span><span>{amounts.net.toFixed(2)}€</span></div>
-                                                    {invoiceForm.vatMode !== 'kleinunternehmer' && (
-                                                        <div className="offer-row"><span>USt ({(amounts.vatRate * 100).toFixed(0)}%):</span><span>{amounts.vatAmount.toFixed(2)}€</span></div>
-                                                    )}
+                                                    {amounts.vatBreakdown.map(g => (
+                                                        <div className="offer-row" key={g.rate}><span>USt ({(g.rate * 100).toFixed(0)}%):</span><span>{g.vatAmount.toFixed(2)}€</span></div>
+                                                    ))}
                                                     <div className="offer-total">Gesamtbetrag: {amounts.gross.toFixed(2)}€</div>
                                                 </React.Fragment>
                                             );
@@ -4897,7 +5178,10 @@ Deutschland
                                         </div>
                                         <div className="item-meta">
                                             {invoice.serviceStart && invoice.serviceEnd ? `${invoice.serviceStart} bis ${invoice.serviceEnd} • ` : ''}
-                                            {invoice.vatMode === 'kleinunternehmer' ? 'Ohne USt (§19)' : `${(invoice.vatRate * 100).toFixed(0)}% USt`}
+                                            {invoice.vatMode === 'kleinunternehmer' ? 'Ohne USt (§19)' : (() => {
+                                                const rates = computeInvoiceAmounts(invoice.items, invoice.vatMode, invoice.discount).vatBreakdown.map(g => `${(g.rate * 100).toFixed(0)}%`);
+                                                return `${rates.join('/')} USt`;
+                                            })()}
                                         </div>
                                         <div className="button-group" style={{ marginTop: '12px' }}>
                                             <button className="secondary" onClick={() => openInvoiceMailPreview(invoice)}>📧 Mail anzeigen</button>
