@@ -747,6 +747,15 @@
                 return list[list.length - 1] || 0;
             };
 
+            // Greenhouse Market GbR unterliegt der Regelbesteuerung (keine Kleinunternehmerregelung
+            // nach § 19 UStG). Übernachtung u. die unmittelbar damit zusammenhängenden
+            // Nebenleistungen (Zusatzperson, Early Check-in, Late Checkout, Endreinigung,
+            // Hundegebühr) unterliegen gem. § 12 Abs. 2 Nr. 11 UStG dem ermäßigten Steuersatz von
+            // 7%. Der Projektraum ist keine Übernachtungsleistung und unterliegt dem regulären
+            // Steuersatz von 19% (§ 12 Abs. 1 UStG).
+            const VAT_RATE_ACCOMMODATION = 0.07; // § 12 Abs. 2 Nr. 11 UStG
+            const VAT_RATE_STANDARD = 0.19; // § 12 Abs. 1 UStG
+
             const calculateTotal = () => {
                 if (!formData.checkIn || !formData.checkOut) return 0;
                 const nights = calculateNights(formData.checkIn, formData.checkOut);
@@ -769,6 +778,36 @@
                 if (formData.projektSpace) total += prices.projektSpace * nights + (prices.projektSpaceCleaning || 0);
 
                 return total;
+            };
+
+            // Wie calculateTotal(), unterteilt den Nettobetrag aber nach Steuersatz: Übernachtung
+            // u. die unmittelbar damit zusammenhängenden Nebenleistungen (7%, § 12 Abs. 2 Nr. 11
+            // UStG) versus Projektraum (19%, keine Übernachtungsleistung). Summe entspricht
+            // calculateTotal().
+            const calculateNetSplit = () => {
+                if (!formData.checkIn || !formData.checkOut) return { accommodationNet: 0, projektraumNet: 0 };
+                const nights = calculateNights(formData.checkIn, formData.checkOut);
+
+                let accommodationNet = calculateStayBasePrice(formData.checkIn, formData.checkOut, formData.wohnung);
+
+                const basePersonsForWohnung = getBasePersons(formData.wohnung);
+                if (formData.persons > basePersonsForWohnung) {
+                    for (let i = basePersonsForWohnung; i < formData.persons; i++) {
+                        const extraPersonIndex = i - basePersonsForWohnung;
+                        const personPrice = getExtraPersonPrice(extraPersonIndex);
+                        accommodationNet += personPrice * nights;
+                    }
+                }
+
+                if (formData.earlyCheckin) accommodationNet += prices.earlyCheckin;
+                if (formData.lateCheckout) accommodationNet += prices.lateCheckout;
+                if (formData.finalCleaning) accommodationNet += getFinalCleaning(formData.wohnung);
+                if (formData.dogFee) accommodationNet += prices.dogFee * formData.dogCount * nights;
+
+                let projektraumNet = 0;
+                if (formData.projektSpace) projektraumNet += prices.projektSpace * nights + (prices.projektSpaceCleaning || 0);
+
+                return { accommodationNet, projektraumNet };
             };
 
             const isDateBooked = (date) => {
@@ -1258,10 +1297,40 @@
                                     {formData.projektSpace && <div className="price-row"><span>Projektraum ({nights}×):</span><span>+{(prices.projektSpace * nights).toFixed(2)}€</span></div>}
                                     {formData.projektSpace && <div className="price-row"><span>Projektraum Reinigung:</span><span>+{prices.projektSpaceCleaning || 0}€</span></div>}
 
-                                    <div className="price-row total">
-                                        <span>Gesamtpreis:</span>
-                                        <span>{total.toFixed(2)}€</span>
-                                    </div>
+                                    {(() => {
+                                        const split = calculateNetSplit();
+                                        const accVat = split.accommodationNet * VAT_RATE_ACCOMMODATION;
+                                        const projVat = split.projektraumNet * VAT_RATE_STANDARD;
+                                        const gross = split.accommodationNet + accVat + split.projektraumNet + projVat;
+                                        return (
+                                            <React.Fragment>
+                                                <div className="price-row">
+                                                    <span>Nettobetrag Übernachtung u. Nebenleistungen:</span>
+                                                    <span>{split.accommodationNet.toFixed(2)}€</span>
+                                                </div>
+                                                <div className="price-row">
+                                                    <span>zzgl. 7% MwSt. (§ 12 Abs. 2 Nr. 11 UStG):</span>
+                                                    <span>{accVat.toFixed(2)}€</span>
+                                                </div>
+                                                {split.projektraumNet > 0 && (
+                                                    <React.Fragment>
+                                                        <div className="price-row">
+                                                            <span>Nettobetrag Projektraum:</span>
+                                                            <span>{split.projektraumNet.toFixed(2)}€</span>
+                                                        </div>
+                                                        <div className="price-row">
+                                                            <span>zzgl. 19% MwSt.:</span>
+                                                            <span>{projVat.toFixed(2)}€</span>
+                                                        </div>
+                                                    </React.Fragment>
+                                                )}
+                                                <div className="price-row total">
+                                                    <span>Gesamtpreis (inkl. MwSt.):</span>
+                                                    <span>{gross.toFixed(2)}€</span>
+                                                </div>
+                                            </React.Fragment>
+                                        );
+                                    })()}
                                     <div style={{ fontSize: '12px', color: 'var(--licht-70)', marginTop: '12px' }}>
                                         Kaution: 100€ (wird nach Checkout zurückerstattet)
                                     </div>
