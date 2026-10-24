@@ -935,6 +935,9 @@
                 projektSpace: 100,
                 projektSpaceCleaning: 40,
                 deposit: 100,
+                offerValidityDays: 30, // Gültigkeitsdauer von Angeboten in Tagen
+                offerShortNoticeDays: 30, // Anreise innerhalb dieser Tage = kurzfristig
+                offerShortValidityHours: 24, // Gültigkeit kurzfristiger Angebote in Stunden
                 extraServices: [], // frei verwaltbare, zubuchbare Leistungen: [{ id, name, price }]
             });
 
@@ -1742,6 +1745,28 @@ Lucia und Jan`;
                 }));
             };
 
+            // Gültig-bis-Datum eines Angebots: Erstellungsdatum + eingestellte Gültigkeitsdauer
+            // (Einstellung unter "Preise & Bedingungen"). Wird vom Erstellungsdatum aus gerechnet,
+            // damit erneutes Drucken/Versenden die Frist nicht stillschweigend verlängert.
+            const offerValidUntil = (offer) => {
+                const base = (offer && offer.createdAt) ? new Date(offer.createdAt) : new Date();
+                const start = isNaN(base.getTime()) ? new Date() : base;
+                // Kurzfristige Anfragen: Liegt die Anreise weniger als X Tage (Standard 30) nach
+                // der Angebotserstellung, gilt das Angebot nur Y Stunden (Standard 24) — mit Uhrzeit.
+                const shortThresholdDays = Math.max(0, parseInt(prices.offerShortNoticeDays, 10) || 30);
+                const shortValidityHours = Math.max(1, parseInt(prices.offerShortValidityHours, 10) || 24);
+                if (offer && offer.checkIn) {
+                    const arrival = new Date(offer.checkIn + 'T00:00:00');
+                    const daysUntilArrival = (arrival.getTime() - start.getTime()) / (24 * 60 * 60 * 1000);
+                    if (daysUntilArrival < shortThresholdDays) {
+                        const until = new Date(start.getTime() + shortValidityHours * 60 * 60 * 1000);
+                        return until.toLocaleDateString('de-DE') + ', ' + until.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' Uhr';
+                    }
+                }
+                const days = Math.max(1, parseInt(prices.offerValidityDays, 10) || 30);
+                return new Date(start.getTime() + days * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE');
+            };
+
             const calculateNights = (checkIn, checkOut) => {
                 if (!checkIn || !checkOut) return 0;
                 const start = new Date(checkIn);
@@ -2057,7 +2082,7 @@ vielen Dank für Ihre Anfrage! Gerne erstellen wir Ihnen folgendes Angebot:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Angebotsnummer: ${offerDisplayNumber(offer)}
-Gültig bis: ${new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE')}
+Gültig bis: ${offerValidUntil(offer)}
 
 UNTERKUNFT
 ${offer.wohnung === 'wohnung1' ? 'Wohnung I' : offer.wohnung === 'wohnung2' ? 'Wohnung II' : 'Beide Wohnungen'}
@@ -2238,7 +2263,7 @@ Deutschland`;
                     + '<h1>ANGEBOT ' + displayNumber + '</h1>'
                     + '<div class="meta-grid"><div><strong>Für:</strong><br>' + offer.guest.name + '<br>' + offer.guest.email + '</div>'
                     + '<div style="text-align:right">Angebotsdatum: ' + new Date().toLocaleDateString('de-DE') + '<br>'
-                    + 'Gültig bis: ' + new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE') + '<br>'
+                    + 'Gültig bis: ' + offerValidUntil(offer) + '<br>'
                     + 'Zeitraum: ' + offer.checkIn + ' – ' + offer.checkOut + ' (' + nights + ' Nächte)</div></div>'
                     + '<table><thead><tr><th>Beschreibung</th><th style="text-align:center">Menge</th><th style="text-align:right">Einzelpreis</th><th style="text-align:right">Gesamt</th></tr></thead><tbody>'
                     + itemsRows
@@ -2336,7 +2361,7 @@ Deutschland`;
                 let offerMetaY = y;
                 doc.text(`Angebotsdatum: ${new Date().toLocaleDateString('de-DE')}`, pageWidth - marginRight, offerMetaY, { align: 'right' });
                 offerMetaY += 5;
-                doc.text(`Gültig bis: ${new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('de-DE')}`, pageWidth - marginRight, offerMetaY, { align: 'right' });
+                doc.text(`Gültig bis: ${offerValidUntil(offer)}`, pageWidth - marginRight, offerMetaY, { align: 'right' });
                 offerMetaY += 5;
                 doc.text(`Zeitraum: ${offer.checkIn} – ${offer.checkOut} (${nights} Nächte)`, pageWidth - marginRight, offerMetaY, { align: 'right' });
                 offerMetaY += 5;
@@ -5437,6 +5462,27 @@ Deutschland
                                         <input type="number" min="0" max="100" step="1" value={downPaymentPercent} onChange={(e) => setDownPaymentPercent(parseInt(e.target.value) || 0)} />
                                         <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginTop: '4px' }}>
                                             Marktüblich sind 20–30 % bei Buchungsbestätigung. Wird sofort fällig, sobald eine Anfrage bestätigt wird.
+                                        </div>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Gültigkeit von Angeboten (Tage)</label>
+                                        <input type="number" min="1" max="365" step="1" value={prices.offerValidityDays || 30} onChange={(e) => updatePrice('offerValidityDays', Math.max(1, parseInt(e.target.value) || 1))} />
+                                        <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginTop: '4px' }}>
+                                            Erscheint als „Gültig bis“ in Angebots-Mail, Druckansicht und PDF — gerechnet ab Erstellungsdatum des Angebots.
+                                        </div>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Kurzfristig: Anreise in weniger als (Tage)</label>
+                                        <input type="number" min="0" max="365" step="1" value={prices.offerShortNoticeDays ?? 30} onChange={(e) => updatePrice('offerShortNoticeDays', Math.max(0, parseInt(e.target.value) || 0))} />
+                                        <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginTop: '4px' }}>
+                                            Liegt die Anreise näher als diese Anzahl Tage am Erstellungsdatum, gilt die kürzere Frist rechts. 0 = Regel aus.
+                                        </div>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>Gültigkeit kurzfristiger Angebote (Stunden)</label>
+                                        <input type="number" min="1" max="720" step="1" value={prices.offerShortValidityHours || 24} onChange={(e) => updatePrice('offerShortValidityHours', Math.max(1, parseInt(e.target.value) || 1))} />
+                                        <div style={{ fontSize: '11px', color: 'var(--licht-70)', marginTop: '4px' }}>
+                                            „Gültig bis“ wird dann mit Datum und Uhrzeit angegeben.
                                         </div>
                                     </div>
                                 </div>
